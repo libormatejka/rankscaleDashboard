@@ -98,33 +98,9 @@ def api_post_paginated(path: str, body: dict, limit: int = 50) -> list:
 
 
 # ── MERGE helper ──────────────────────────────────────────────────────────────
-def merge(client: bigquery.Client, target: str, rows: list[dict], merge_keys: list[str], job_config=None):
-    if not rows:
-        log.warning(f"  → žádná data pro {target}, přeskakuji")
-        return
-
-    # Vytvoř dočasnou tabulku
-    temp_table = f"{target}_tmp_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    temp_table_clean = temp_table.replace("`", "")
-
-    # Inferuj schema z prvního řádku
-    sample = rows[0]
-    schema = []
-    for col, val in sample.items():
-        if isinstance(val, bool):
-            field_type = "BOOL"
-        elif isinstance(val, int):
-            field_type = "INT64"
-        elif isinstance(val, float):
-            field_type = "FLOAT64"
-        elif isinstance(val, (dict, list)):
-            field_type = "JSON"
-        else:
-            field_type = "STRING"
-        schema.append(bigquery.SchemaField(col, field_type))
-
-    # Přetypuj hodnoty
-    clean_rows = []
+def _clean_rows(rows: list[dict]) -> list[dict]:
+    """Převede dict/list hodnoty na JSON string, přidá loaded_at."""
+    result = []
     for row in rows:
         clean = {}
         for col, val in row.items():
@@ -132,40 +108,57 @@ def merge(client: bigquery.Client, target: str, rows: list[dict], merge_keys: li
                 clean[col] = json.dumps(val, ensure_ascii=False)
             else:
                 clean[col] = val
-        clean_rows.append(clean)
+        clean["loaded_at"] = NOW
+        result.append(clean)
+    return result
 
-    # Nahraj do temp tabulky
-    temp_ref = bigquery.TableReference.from_string(temp_table_clean)
-    temp_obj = bigquery.Table(temp_ref, schema=schema)
-    temp_obj = client.create_table(temp_obj, exists_ok=True)
-    errors = client.insert_rows_json(temp_obj, clean_rows)
-    if errors:
-        raise RuntimeError(f"Chyba při nahrávání do temp tabulky: {errors}")
 
-    # Sestav MERGE SQL
-    all_cols     = list(sample.keys())
-    update_cols  = [c for c in all_cols if c not in merge_keys and c != "loaded_at"]
-    on_clause    = " AND ".join([f"T.{k} = S.{k}" for k in merge_keys])
-    update_set   = ", ".join([f"T.{c} = S.{c}" for c in update_cols])
-    update_set  += ", T.loaded_at = CURRENT_TIMESTAMP()"
-    insert_cols  = ", ".join(all_cols)
-    insert_vals  = ", ".join([f"S.{c}" for c in all_cols])
-
-    merge_sql = f"""
-    MERGE {target} T
-    USING `{temp_table_clean}` S
-    ON {on_clause}
-    WHEN MATCHED THEN
-      UPDATE SET {update_set}
-    WHEN NOT MATCHED THEN
-      INSERT ({insert_cols}, loaded_at)
-      VALUES ({insert_vals}, CURRENT_TIMESTAMP())
+def merge(client: bigquery.Client, target: str, rows: list[dict], merge_keys: list[str]):
     """
+    DELETE + INSERT pattern. Nevyžaduje bigquery.tables.create.
+    Stačí: BigQuery Data Editor + BigQuery Job User na úrovni projektu.
 
-    log.info(f"  → MERGE do {target} ({len(rows)} řádků)")
-    client.query(merge_sql).result()
-    client.delete_table(temp_table_clean, not_found_ok=True)
-    log.info(f"  ✓ MERGE hotov")
+    1. Smaže řádky v target jejichž merge_keys odpovídají příchozím datům
+    2. Insertne všechny příchozí řádky čerstvě
+    """
+    if not rows:
+        log.warning(f"  → žádná data pro {target}, přeskakuji")
+        return
+
+    BATCH = 500
+    if len(rows) > BATCH:
+        for i in range(0, len(rows), BATCH):
+            merge(client, target, rows[i:i+BATCH], merge_keys)
+        return
+
+    clean = _clean_rows(rows)
+
+    # ── DELETE ────────────────────────────────────────────────────────────────
+    if len(merge_keys) == 1:
+        k       = merge_keys[0]
+        in_list = ", ".join(f"'{row[k]}'" for row in clean if row.get(k) is not None)
+        delete_sql = f"DELETE FROM {target} WHERE `{k}` IN ({in_list})"
+    else:
+        col_tuple  = "(" + ", ".join(f"`{k}`" for k in merge_keys) + ")"
+        key_tuples = []
+        for row in clean:
+            vals = ", ".join(
+                f"'{row[k]}'" if row.get(k) is not None else "NULL"
+                for k in merge_keys
+            )
+            key_tuples.append(f"({vals})")
+        delete_sql = f"DELETE FROM {target} WHERE {col_tuple} IN ({', '.join(key_tuples)})"
+
+    log.info(f"  → DELETE + INSERT do {target} ({len(clean)} řádků)")
+    client.query(delete_sql).result()
+
+    # ── INSERT ────────────────────────────────────────────────────────────────
+    target_clean = target.replace("`", "")
+    errors = client.insert_rows_json(target_clean, clean)
+    if errors:
+        raise RuntimeError(f"INSERT chyba v {target}: {errors}")
+
+    log.info(f"  ✓ hotov")
 
 
 def insert_new_only(client: bigquery.Client, target: str, rows: list[dict], dedup_key: str):
