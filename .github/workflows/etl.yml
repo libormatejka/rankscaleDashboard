@@ -1,0 +1,41 @@
+name: Rankscale → BigQuery ETL
+
+on:
+  schedule:
+    # Každý den v 6:00 UTC (7:00 CET / 8:00 CEST)
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    # Možnost spustit ručně z GitHub UI (tlačítko "Run workflow")
+
+jobs:
+  etl:
+    name: Rankscale ETL
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalace závislostí
+        run: pip install -r requirements.txt
+
+      - name: Spuštění ETL
+        env:
+          RANKSCALE_API_KEY: ${{ secrets.RANKSCALE_API_KEY }}
+          GCP_PROJECT:       ${{ secrets.GCP_PROJECT }}
+          BQ_DATASET:        ${{ secrets.BQ_DATASET }}
+          GCP_SA_JSON:       ${{ secrets.GCP_SA_JSON }}
+        run: python src/rankscale_etl.py
+
+      - name: Oznámení při selhání
+        if: failure()
+        run: |
+          echo "❌ ETL selhal – zkontroluj logy výše"
+          # Sem můžeš přidat curl na Slack webhook nebo email notifikaci
