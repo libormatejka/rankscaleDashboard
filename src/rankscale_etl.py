@@ -97,7 +97,12 @@ def api_post_paginated(path: str, body: dict, limit: int = 50) -> list:
     return all_items
 
 
-# ── MERGE helper ──────────────────────────────────────────────────────────────
+# ── Load-job helpers ───────────────────────────────────────────────────────────
+# Používáme load jobs místo streaming inserts (insert_rows_json).
+# Důvod: streaming insert plní "streaming buffer" – BQ pak neumožňuje
+# DELETE ani overwrite dokud se buffer nevyprázdní (hodiny).
+# Load jobs zapisují přímo do table storage – žádný streaming buffer.
+
 def _clean_rows(rows: list[dict]) -> list[dict]:
     """Převede dict/list hodnoty na JSON string, přidá loaded_at."""
     result = []
@@ -113,82 +118,94 @@ def _clean_rows(rows: list[dict]) -> list[dict]:
     return result
 
 
-def merge(client: bigquery.Client, target: str, rows: list[dict], merge_keys: list[str]):
-    """
-    DELETE + INSERT pattern. Nevyžaduje bigquery.tables.create.
-    Stačí: BigQuery Data Editor + BigQuery Job User na úrovni projektu.
+def _load_job(client: bigquery.Client, target_str: str, rows: list[dict],
+              write_disposition: str) -> None:
+    """Spustí load job – zapíše rows do target tabulky."""
+    import io
+    target_clean = target_str.replace("`", "")
+    table_ref    = bigquery.TableReference.from_string(target_clean)
 
-    1. Smaže řádky v target jejichž merge_keys odpovídají příchozím datům
-    2. Insertne všechny příchozí řádky čerstvě
+    job_config = bigquery.LoadJobConfig(
+        write_disposition = write_disposition,
+        source_format     = bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        autodetect        = False,   # tabulka už existuje, schema přebíráme z ní
+    )
+
+    # Serializuj jako NDJSON
+    ndjson = "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in rows)
+    data   = io.BytesIO(ndjson.encode("utf-8"))
+
+    job = client.load_table_from_file(data, table_ref, job_config=job_config)
+    job.result()   # čeká na dokončení
+    if job.errors:
+        raise RuntimeError(f"Load job chyba v {target_str}: {job.errors}")
+
+
+def load_truncate(client: bigquery.Client, target: str, rows: list[dict]) -> None:
+    """
+    WRITE_TRUNCATE – nahradí celý obsah tabulky.
+    Vhodné pro dim tabulky (dim_brands, dim_search_terms) které jsou malé
+    a každý den je nahrazujeme čerstvými daty z API.
     """
     if not rows:
         log.warning(f"  → žádná data pro {target}, přeskakuji")
         return
+    clean = _clean_rows(rows)
+    log.info(f"  → TRUNCATE + LOAD do {target} ({len(clean)} řádků)")
+    _load_job(client, target, clean, bigquery.WriteDisposition.WRITE_TRUNCATE)
+    log.info(f"  ✓ hotov")
 
-    BATCH = 500
-    if len(rows) > BATCH:
-        for i in range(0, len(rows), BATCH):
-            merge(client, target, rows[i:i+BATCH], merge_keys)
+
+def load_partitions(client: bigquery.Client, target: str, rows: list[dict],
+                    date_col: str) -> None:
+    """
+    Overwrite per date partition – přepíše jen dotčené dny, ostatní nechá.
+    Vhodné pro fact tabulky partitioned by date.
+    Každý jedinečný den v datech = jeden load job s partition decoratorem.
+    """
+    if not rows:
+        log.warning(f"  → žádná data pro {target}, přeskakuji")
         return
-
     clean = _clean_rows(rows)
 
-    # ── DELETE ────────────────────────────────────────────────────────────────
-    if len(merge_keys) == 1:
-        k       = merge_keys[0]
-        in_list = ", ".join(f"'{row[k]}'" for row in clean if row.get(k) is not None)
-        delete_sql = f"DELETE FROM {target} WHERE `{k}` IN ({in_list})"
-    else:
-        col_tuple  = "(" + ", ".join(f"`{k}`" for k in merge_keys) + ")"
-        key_tuples = []
-        for row in clean:
-            vals = ", ".join(
-                f"'{row[k]}'" if row.get(k) is not None else "NULL"
-                for k in merge_keys
-            )
-            key_tuples.append(f"({vals})")
-        delete_sql = f"DELETE FROM {target} WHERE {col_tuple} IN ({', '.join(key_tuples)})"
+    # Roztřiď řádky per datum
+    from collections import defaultdict
+    by_date: dict[str, list] = defaultdict(list)
+    for row in clean:
+        day = str(row.get(date_col, TODAY))[:10].replace("-", "")  # YYYYMMDD
+        by_date[day].append(row)
 
-    log.info(f"  → DELETE + INSERT do {target} ({len(clean)} řádků)")
-    client.query(delete_sql).result()
-
-    # ── INSERT ────────────────────────────────────────────────────────────────
+    log.info(f"  → PARTITION OVERWRITE do {target} ({len(clean)} řádků, {len(by_date)} partitions)")
     target_clean = target.replace("`", "")
-    errors = client.insert_rows_json(target_clean, clean)
-    if errors:
-        raise RuntimeError(f"INSERT chyba v {target}: {errors}")
+    for day, day_rows in by_date.items():
+        partition_target = f"`{target_clean}${day}`"
+        _load_job(client, partition_target, day_rows, bigquery.WriteDisposition.WRITE_TRUNCATE)
 
     log.info(f"  ✓ hotov")
 
 
-def insert_new_only(client: bigquery.Client, target: str, rows: list[dict], dedup_key: str):
-    """INSERT pouze řádků které ještě neexistují (podle dedup_key)."""
+def load_append_dedup(client: bigquery.Client, target: str, rows: list[dict],
+                      dedup_key: str) -> None:
+    """
+    Append pouze nových řádků (dedup podle dedup_key).
+    Vhodné pro fact_answer_texts kde execution_id je unikátní navždy.
+    """
     if not rows:
         log.warning(f"  → žádná data pro {target}, přeskakuji")
         return
 
-    # Načti existující klíče
-    existing_sql = f"SELECT {dedup_key} FROM {target}"
-    existing = {row[dedup_key] for row in client.query(existing_sql).result()}
-    new_rows = [r for r in rows if r.get(dedup_key) not in existing]
-    log.info(f"  → {len(new_rows)} nových řádků (z {len(rows)} celkem)")
+    existing_sql = f"SELECT `{dedup_key}` FROM {target}"
+    existing     = {str(row[dedup_key]) for row in client.query(existing_sql).result()}
+    new_rows     = [r for r in rows if str(r.get(dedup_key, "")) not in existing]
+    log.info(f"  → {len(new_rows)} nových řádků z {len(rows)} celkem")
 
     if not new_rows:
+        log.info(f"  ✓ nic nového")
         return
 
-    clean_rows = []
-    for row in new_rows:
-        clean = {}
-        for col, val in row.items():
-            clean[col] = json.dumps(val, ensure_ascii=False) if isinstance(val, (dict, list)) else val
-        clean["loaded_at"] = NOW
-        clean_rows.append(clean)
-
-    target_clean = target.replace("`", "")
-    errors = client.insert_rows_json(target_clean, clean_rows)
-    if errors:
-        raise RuntimeError(f"Chyba při INSERT: {errors}")
-    log.info(f"  ✓ INSERT {len(clean_rows)} nových řádků")
+    clean = _clean_rows(new_rows)
+    _load_job(client, target, clean, bigquery.WriteDisposition.WRITE_APPEND)
+    log.info(f"  ✓ hotov")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -211,7 +228,7 @@ def step_brands(client: bigquery.Client) -> str:
         "created_at":        b.get("createdAt"),
     } for b in brands]
 
-    merge(client, table("dim_brands"), rows, merge_keys=["brand_id"])
+    load_truncate(client, table("dim_brands"), rows)
     return brands[0]["id"]   # předpokládáme 1 brand
 
 
@@ -224,7 +241,7 @@ def step_search_terms(client: bigquery.Client, brand_id: str):
 
     rows = [{
         "search_term_id": t["id"],
-        "brand_id":       brand_id,   # API ho nevrací uvnitř každého termu
+        "brand_id":       brand_id,
         "query":          t["query"],
         "topic":          t.get("topic"),
         "tags":           t.get("tags", []),
@@ -235,7 +252,7 @@ def step_search_terms(client: bigquery.Client, brand_id: str):
         "created_at":     t.get("createdAt"),
     } for t in terms]
 
-    merge(client, table("dim_search_terms"), rows, merge_keys=["search_term_id"])
+    load_truncate(client, table("dim_search_terms"), rows)
 
 
 def step_report(client: bigquery.Client, brand_id: str):
@@ -252,9 +269,9 @@ def step_report(client: bigquery.Client, brand_id: str):
         "selectedQuery": "all",
     })
 
-    # timeSeries → fact_report_timeseries
+    # timeSeries → fact_report_timeseries (partition overwrite per den)
     ts_rows = [{
-        "date":              row["date"][:10],   # ISO date string
+        "date":              row["date"][:10],
         "brand_id":          brand_id,
         "aggregation_level": AGGREGATION,
         "visibility":        row.get("visibility"),
@@ -265,10 +282,9 @@ def step_report(client: bigquery.Client, brand_id: str):
         "citations":         row.get("citations"),
         "top3_pct":          row.get("top3Pct"),
     } for row in data["data"].get("timeSeries", [])]
-    merge(client, table("fact_report_timeseries"), ts_rows,
-          merge_keys=["date", "brand_id", "aggregation_level"])
+    load_partitions(client, table("fact_report_timeseries"), ts_rows, date_col="date")
 
-    # byEngine → fact_report_by_engine
+    # byEngine → fact_report_by_engine (snapshot_date partition overwrite)
     by_engine = data["data"].get("byEngine", {})
     engine_rows = [{
         "snapshot_date": TODAY,
@@ -279,8 +295,7 @@ def step_report(client: bigquery.Client, brand_id: str):
         "position":      metrics.get("position"),
         "mentions":      metrics.get("mentions"),
     } for engine, metrics in by_engine.items()]
-    merge(client, table("fact_report_by_engine"), engine_rows,
-          merge_keys=["snapshot_date", "brand_id", "engine_name"])
+    load_partitions(client, table("fact_report_by_engine"), engine_rows, date_col="snapshot_date")
 
 
 def step_search_term_snapshots(client: bigquery.Client, brand_id: str):
@@ -299,7 +314,7 @@ def step_search_term_snapshots(client: bigquery.Client, brand_id: str):
 
     rows = []
     for t in data["data"].get("searchTerms", []):
-        lr = t.get("latestRun") or {}
+        lr    = t.get("latestRun") or {}
         trend = t.get("trend") or {}
         rows.append({
             "snapshot_date":           TODAY,
@@ -321,8 +336,7 @@ def step_search_term_snapshots(client: bigquery.Client, brand_id: str):
             "trend_position_dir":      (trend.get("position") or {}).get("direction"),
         })
 
-    merge(client, table("fact_search_term_snapshots"), rows,
-          merge_keys=["snapshot_date", "search_term_id"])
+    load_partitions(client, table("fact_search_term_snapshots"), rows, date_col="snapshot_date")
 
 
 def step_answer_texts(client: bigquery.Client, brand_id: str):
@@ -353,7 +367,7 @@ def step_answer_texts(client: bigquery.Client, brand_id: str):
             })
 
     log.info(f"  → {len(rows)} answer texts k načtení")
-    insert_new_only(client, table("fact_answer_texts"), rows, dedup_key="execution_id")
+    load_append_dedup(client, table("fact_answer_texts"), rows, dedup_key="execution_id")
 
 
 def step_sentiment(client: bigquery.Client, brand_id: str):
@@ -368,7 +382,6 @@ def step_sentiment(client: bigquery.Client, brand_id: str):
         "selectedQuery":  "all",
     })
 
-    # timeSeries → fact_sentiment_timeseries
     ts_rows = [{
         "date":            row["date"][:10],
         "brand_id":        brand_id,
@@ -377,10 +390,8 @@ def step_sentiment(client: bigquery.Client, brand_id: str):
         "neutral_pct":     row.get("neutral"),
         "negative_pct":    row.get("negative"),
     } for row in data["data"].get("timeSeries", [])]
-    merge(client, table("fact_sentiment_timeseries"), ts_rows,
-          merge_keys=["date", "brand_id"])
+    load_partitions(client, table("fact_sentiment_timeseries"), ts_rows, date_col="date")
 
-    # byEngine → fact_sentiment_by_engine
     by_engine = data["data"].get("byEngine", {})
     engine_rows = [{
         "snapshot_date":   TODAY,
@@ -389,8 +400,7 @@ def step_sentiment(client: bigquery.Client, brand_id: str):
         "sentiment_score": metrics.get("score"),
         "sentiment_label": metrics.get("label"),
     } for engine, metrics in by_engine.items()]
-    merge(client, table("fact_sentiment_by_engine"), engine_rows,
-          merge_keys=["snapshot_date", "brand_id", "engine_name"])
+    load_partitions(client, table("fact_sentiment_by_engine"), engine_rows, date_col="snapshot_date")
 
 
 def step_citations(client: bigquery.Client, brand_id: str):
@@ -419,8 +429,8 @@ def step_citations(client: bigquery.Client, brand_id: str):
         "citation_count": c.get("count"),
     } for c in citations]
 
-    merge(client, table("fact_citations"), rows,
-          merge_keys=["search_term_id", "engine_name", "url"])
+    # Citations: overwrite last_seen partition (API aktualizuje count průběžně)
+    load_partitions(client, table("fact_citations"), rows, date_col="last_seen")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
