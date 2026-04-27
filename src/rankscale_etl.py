@@ -239,10 +239,14 @@ def step_search_terms(client: bigquery.Client, brand_id: str):
     terms = data["data"]["searchTerms"]
     log.info(f"  → {len(terms)} search terms nalezeno")
 
+    # Debug: ukaž reálnou strukturu prvního záznamu
+    if terms:
+        log.info(f"  → DEBUG search term klíče: {list(terms[0].keys())}")
+
     rows = [{
-        "search_term_id": t["id"],
+        "search_term_id": t.get("id") or t.get("searchTermId"),
         "brand_id":       brand_id,
-        "query":          t["query"],
+        "query":          t.get("query") or t.get("term") or t.get("searchTerm") or t.get("text"),
         "topic":          t.get("topic"),
         "tags":           t.get("tags", []),
         "engines":        t.get("engines", []),
