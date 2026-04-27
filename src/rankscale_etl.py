@@ -224,7 +224,7 @@ def step_search_terms(client: bigquery.Client, brand_id: str):
 
     rows = [{
         "search_term_id": t["id"],
-        "brand_id":       t["brandId"],
+        "brand_id":       brand_id,   # API ho nevrací uvnitř každého termu
         "query":          t["query"],
         "topic":          t.get("topic"),
         "tags":           t.get("tags", []),
