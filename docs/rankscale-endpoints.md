@@ -12,8 +12,10 @@
 | `GET /v1/metrics/search-terms` | ✅ Ověřeno | Reálný response k dispozici |
 | `POST /v1/metrics/report` | ✅ Ověřeno | Reálný response k dispozici |
 | `POST /v1/metrics/search-terms-report` | ✅ Ověřeno | Reálný response k dispozici |
-| `POST /v1/metrics/sentiment` | ⏳ Čeká | Struktura z oficiální dokumentace |
-| `POST /v1/metrics/citations` | ⏳ Čeká | Struktura z oficiální dokumentace |
+| `POST /v1/metrics/sentiment` | ✅ Ověřeno | Reálný response k dispozici |
+| `POST /v1/metrics/citations` | ✅ Ověřeno | Reálný response k dispozici |
+| `GET /v1/metrics/credits` | ✅ Ověřeno | Reálný response k dispozici |
+| `GET /v1/metrics/topics` | ✅ Ověřeno | Reálný response k dispozici |
 
 ---
 
@@ -31,6 +33,8 @@
   - [POST /v1/metrics/search-terms-report](#post-v1metricssearch-terms-report)
   - [POST /v1/metrics/sentiment](#post-v1metricssentiment)
   - [POST /v1/metrics/citations](#post-v1metricscitations)
+  - [GET /v1/metrics/credits](#get-v1metricscredits)
+  - [GET /v1/metrics/topics](#get-v1metricstopics)
 - [Chybové kódy](#chybové-kódy)
 
 ---
@@ -696,7 +700,7 @@ Má stejné 4 klíče. Aktivní úroveň je **pole objektů** (jeden per engine)
 
 #### `data.competitorMetrics[]` – snapshot konkurence
 
-Jeden objekt per konkurent.
+Jeden objekt per brand. **Zahrnuje i vlastní brand** jako první prvek (s `isOwnBrand: true`) – pole tedy není čistě "konkurence", ale celkový přehled všech brandů včetně vlastního.
 
 ```json
 {
@@ -738,29 +742,34 @@ Jeden objekt per konkurent.
 
 #### `data.competitorTimeSeriesData{}` – timeseries konkurence
 
-Stejný formát paralelních polí, ale s `timestamps` na úrovni periody a `competitors[]` polem.
+Má stejné 4 klíče jako ostatní timeseries. Neobsazené úrovně mají `timestamps: []` a `competitors: []`. Aktivní úroveň má `timestamps` sdílené pro všechny konkurenty a pole `competitors[]` kde každý má `metrics{}` s paralelními poli.
+
+> ⚠️ **Vlastní brand v `competitorTimeSeriesData` chybí** – timeseries vlastního brandu je v `ownBrandMetrics.historicalData`.
 
 ```json
 {
+  "hourly": { "timestamps": [], "competitors": [] },
   "daily": {
-    "timestamps": ["2026-03-31T00:00:00.000Z", "2026-04-07T00:00:00.000Z", ...],
+    "timestamps": ["2026-04-07T00:00:00.000Z", "2026-04-14T00:00:00.000Z", "2026-04-21T00:00:00.000Z"],
     "competitors": [
       {
         "name": "Air Bank",
         "isOwnBrand": false,
-        "variations": ["Air Bank", "Air bank"],
+        "variations": ["Air Bank"],
         "metrics": {
-          "visibilityScore": [59.2, 59.3, 59.5, 59.5],
-          "sentiment":       [66.4, 66.6, 67.2, 67.1],
-          "avgPosition":     [3.5, 3.4, 3.4, 3.4],
-          "detectionRate":   [70.8, 70.6, 70.8, 70.8],
-          "top3":            [42.9, 43.5, 44, 44],
-          "mentions":        [179, 181, 176, 175],
-          "citations":       [158, 152, 100, 105]
+          "visibilityScore": [60.6, 60.8, 59.5],
+          "sentiment":       [67.8, 68.4, 67.7],
+          "avgPosition":     [3.2, 3.1, 3.2],
+          "detectionRate":   [71.3, 71.7, 70.4],
+          "top3":            [45.4, 45, 45.4],
+          "mentions":        [181, 176, 175],
+          "citations":       [152, 100, 105]
         }
       }
     ]
-  }
+  },
+  "weekly":  { "timestamps": [], "competitors": [] },
+  "monthly": { "timestamps": [], "competitors": [] }
 }
 ```
 
@@ -772,139 +781,16 @@ Stejný formát paralelních polí, ale s `timestamps` na úrovni periody a `com
 | `data.timeSeries[]` – pole objektů | `historicalData.daily{}` – paralelní pole hodnot |
 | `data.byEngine{}` – klíče jako engine ID | `engineMetricsData.daily[]` – pole objektů |
 | Endpoint vrací jen vlastní brand | Vrací **vlastní brand + konkurenci + timeseries** vše najednou |
-| `sentiment` je 0–1 float | `sentiment` je **0–100** (např. `61.5`) |
-| Bez `brandNotFound` | `brandNotFound[]` – paralelní boolean pole |
+| `sentiment` je 0–1 float | `sentiment` je **0–100** (např. `62.5`) |
+| Bez `brandNotFound` | `brandNotFound[]` – paralelní boolean pole; `false` = 100% detection v bucketu, `true` = alespoň jeden snapshot brand nenašel |
 | Bez `topicMetricsData` | Topic breakdown je součástí response |
 | Bez `competitorMetrics` | Konkurence je součástí response |
-| Bez `preselectionWhitelist/Blacklist` | Whitelist/blacklist je součástí response |
+| Bez `preselectionWhitelist/Blacklist` | Whitelist/blacklist je uvnitř `ownBrandMetrics`, ne samostatný klíč |
 | Bez `variations[]` | Každý brand má pole variant názvů |
+| `competitorMetrics[]` = jen konkurenti | **Zahrnuje i vlastní brand** jako první prvek (`isOwnBrand: true`) |
+| `historicalData` jen jedna agregační úroveň | Vždy všechny 4 úrovně (`hourly`/`daily`/`weekly`/`monthly`); neobsazené jsou prázdná pole `[]` |
+| `competitorTimeSeriesData` bez struktury | Má také 4 úrovně; vlastní brand zde **chybí** – je v `ownBrandMetrics.historicalData` |
 
-#### Request
-
-```http
-POST /v1/metrics/report
-Authorization: Bearer rk_your_api_key_here
-Content-Type: application/json
-```
-
-```json
-{
-  "brandId": "brand_abc123",
-  "timeFrame": "30d",
-  "aggregation": "daily",
-  "periodOffset": 0,
-  "selectedTopic": "all",
-  "selectedTags": "all",
-  "selectedEngine": "all",
-  "selectedQuery": "all"
-}
-```
-
-#### Tělo requestu
-
-| Pole | Typ | Povinný | Popis |
-|---|---|---|---|
-| `brandId` | string | ✅ | ID brandy |
-| `timeFrame` | string | | Časové okno: `24h`, `7d`, `30d`, `3m`, `1y` |
-| `aggregation` | string | | Úroveň agregace: `hourly`, `daily`, `weekly`, `monthly` |
-| `periodOffset` | integer | | Posun o N period dozadu (0 = aktuální) |
-| `selectedTopic` | string | | Filtr topicu nebo `"all"` |
-| `selectedTags` | string\|array | | Filtr tagů nebo `"all"` |
-| `selectedEngine` | string\|array | | Filtr enginů nebo `"all"` – např. `["chatgpt_gui", "perplexity_gui"]` |
-| `selectedQuery` | string | | Filtr konkrétního search termu nebo `"all"` |
-| `isoStartDate` | string | | Vlastní začátek: `"2026-03-01"` (přepíše `timeFrame`) |
-| `isoEndDate` | string | | Vlastní konec: `"2026-03-31"` (přepíše `timeFrame`) |
-
-#### Response
-
-```json
-{
-  "success": true,
-  "data": {
-    "summary": {
-      "avgVisibility": 42.5,
-      "avgPosition": 3.2,
-      "avgSentiment": 0.72,
-      "totalMentions": 1284,
-      "detectionRate": 68.3,
-      "citationCount": 156,
-      "top3Pct": 55.1
-    },
-    "timeSeries": [
-      {
-        "date": "2026-03-15T00:00:00.000Z",
-        "visibility": 41.2,
-        "position": 3.4,
-        "sentiment": 0.71,
-        "mentions": 89,
-        "detectionRate": 67.0,
-        "citations": 12,
-        "top3Pct": 53.8
-      }
-    ],
-    "byEngine": {
-      "chatgpt": {
-        "visibility": 45.0,
-        "position": 2.8,
-        "mentions": 320
-      },
-      "gemini": {
-        "visibility": 38.5,
-        "position": 3.6,
-        "mentions": 280
-      },
-      "perplexity": {
-        "visibility": 44.2,
-        "position": 3.1,
-        "mentions": 310
-      }
-    }
-  },
-  "meta": {
-    "brandId": "brand_abc123",
-    "timeFrame": "30d",
-    "aggregation": "daily",
-    "generatedAt": "2026-04-27T10:30:00.000Z"
-  }
-}
-```
-
-#### Pole response
-
-**`data.summary`** – agregát za celé období
-
-| Pole | Typ | Popis |
-|---|---|---|
-| `avgVisibility` | float | Průměrné visibility skóre (0–100) |
-| `avgPosition` | float | Průměrná pozice v AI odpovědích |
-| `avgSentiment` | float | Průměrný sentiment (**0–1**, ne procento) |
-| `totalMentions` | integer | Celkový počet zmínek |
-| `detectionRate` | float | % promptů kde se branda objevila |
-| `citationCount` | integer | Počet citací |
-| `top3Pct` | float | % výskytů v top 3 |
-
-**`data.timeSeries[]`** – jeden záznam per agregační period
-
-| Pole | Typ | Popis |
-|---|---|---|
-| `date` | timestamp | Datum periody |
-| `visibility` | float | Visibility skóre (0–100) |
-| `position` | float | Průměrná pozice |
-| `sentiment` | float | Sentiment (**0–1**) |
-| `mentions` | integer | Počet zmínek |
-| `detectionRate` | float | Detection rate v % |
-| `citations` | integer | Počet citací |
-| `top3Pct` | float | % v top 3 |
-
-**`data.byEngine{}`** – klíč je název enginu
-
-| Pole | Typ | Popis |
-|---|---|---|
-| `[engine].visibility` | float | Visibility pro daný engine |
-| `[engine].position` | float | Průměrná pozice |
-| `[engine].mentions` | integer | Počet zmínek |
-
-> ⚠️ `sentiment` je vždy **float 0–1** (např. `0.72`), nikoli procento. Pro zobrazení v % násob 100.
 
 ---
 
@@ -915,11 +801,12 @@ Metriky rozpadnuté na úroveň každého jednotlivého search termu. Pro každ�
 > ✅ **Ověřeno reálným API response.**
 
 > ⚠️ **Klíčová zjištění:**
-> - Struktura je **zásadně jiná** než dokumentace uváděla – žádný `latestRun`, `trend` ani `answerTexts`
+> - Struktura je **zásadně jiná** než dokumentace uváděla – žádný `latestRun`, `trend`
 > - Každý search term obsahuje `ownBrand{}` (volitelné – chybí pokud se brand neobjevil) a `competitors[]`
 > - `topic` je **objekt** `{ id, name }`, ne string
 > - Sentiment je na škále **0–100**, ne 0–1
 > - `ownBrand` a každý competitor mají pole `variations[]` s variantami názvu (může být prázdné)
+> - `answerTexts[]` existuje – obsahuje raw AI texty odpovědí, aktivuje se parametrem `includeAnswerTexts: true`
 
 #### Request
 
@@ -949,6 +836,7 @@ Content-Type: application/json
 | `selectedQuery` | string | | Filtr konkrétního search termu nebo `"all"` |
 | `isoStartDate` | string | | Vlastní začátek (přepíše `timeFrame`) |
 | `isoEndDate` | string | | Vlastní konec (přepíše `timeFrame`) |
+| `includeAnswerTexts` | boolean | | Pokud `true`, každý search term obsahuje `answerTexts[]` s texty AI odpovědí |
 
 #### Response
 
@@ -1039,6 +927,14 @@ Content-Type: application/json
               }
             ]
           }
+        ],
+        "answerTexts": [
+          {
+            "executionId": "ILNvgH8ctdACeQMfTXta",
+            "executedAt": "2026-05-19T06:07:49.313Z",
+            "engine": "google_ai_mode_gui",
+            "answerText": "**UniCredit Bank, Komerční banka a ČSOB** momentálně nabízejí..."
+          }
         ]
       }
     ]
@@ -1074,6 +970,7 @@ Content-Type: application/json
 | `lastSnapshotAt` | timestamp | Kdy byl naposledy spuštěn snapshot |
 | `ownBrand` | object \| undefined | Metriky vlastního brandu – **chybí** pokud se brand v daném search termu neobjevil |
 | `competitors` | array | Pole konkurentů detekovaných v tomto search termu |
+| `answerTexts` | array \| undefined | Raw AI odpovědi – přítomné jen pokud `includeAnswerTexts: true` v requestu |
 
 **`ownBrand{}`** – agregované metriky vlastního brandu za dané období
 
@@ -1113,6 +1010,17 @@ Content-Type: application/json
 | `visibilityScore` | float | Visibility skóre (0–100) |
 | `variations` | array | Varianty názvu detekované AI – viz níže |
 
+**`answerTexts[]`** – raw AI odpovědi per search term (jen pokud `includeAnswerTexts: true`)
+
+| Pole | Typ | Popis |
+|---|---|---|
+| `executionId` | string | ID konkrétní exekuce snapshotu |
+| `executedAt` | timestamp | Kdy byla exekuce provedena |
+| `engine` | string | Engine ID, např. `"google_ai_mode_gui"` |
+| `answerText` | string | Plný text AI odpovědi (markdown, může obsahovat tabulky a citační linky) |
+
+> `answerTexts[]` obsahuje typicky 1–2 záznamy per search term (poslední snapshot per engine). Každý záznam je vždy z jiného `executionId`.
+
 **`competitors[].variations[]`** – varianty názvu stejného brandu
 
 Rankscale detekuje různé varianty zápisu jednoho brandu (např. `"MONETA Money Bank"`, `"Moneta Money Bank"`, `"MONETA"`). Každá varianta má stejnou strukturu jako parent objekt, ale s vlastními metrikami. Pole `variations` je rekurzivní ale **vnořené varianty mají vždy prázdné `variations: []`**.
@@ -1131,8 +1039,8 @@ Rankscale detekuje různé varianty zápisu jednoho brandu (např. `"MONETA Mone
 | `topic` je string | `topic` je **objekt** `{ id: string, name: string }` |
 | `latestRun{}` s metrikami posledního běhu | **Neexistuje** – místo toho jsou na search termu agregované `ownBrand{}` a `competitors[]` |
 | `trend{}` s direction a change | **Neexistuje** |
-| `answerTexts[]` s raw texty | **Neexistuje** (nebo nepotvrzeno) |
-| `includeAnswerTexts` parametr | **Nepotvrzeno** |
+| `answerTexts[]` s raw texty | **Existuje** – aktivuje se `includeAnswerTexts: true` v requestu |
+| `includeAnswerTexts` parametr | **Existuje** – volitelný boolean parametr |
 | Sentiment na škále 0–1 | Sentiment na škále **0–100** |
 | `data.timeFrame` neexistuje | `data.timeFrame` existuje (echo použitého parametru) |
 | Žádné info o statusu/enginu/regionu search termu | `status`, `aiSearchEngines`, `interval`, `region`, `websearch`, `lastSnapshotAt` jsou součástí každého záznamu |
@@ -1143,9 +1051,20 @@ Rankscale detekuje různé varianty zápisu jednoho brandu (např. `"MONETA Mone
 
 ### POST /v1/metrics/sentiment
 
-Sentiment data – jak pozitivně/negativně AI enginy hovoří o brandě.
+Vrací seznam brandů s rozpadem sentimentu na konkrétní pozitivní a negativní klíčová slova detekovaná v AI odpovědích.
 
-> ⏳ **Čeká na ověření reálným API response.**
+> ✅ **Ověřeno reálným API response.**
+
+> ⚠️ **Klíčová zjištění:**
+> - Struktura je **zásadně jiná** než dokumentace uváděla – žádné `overall`, `byEngine`, `timeSeries`
+> - Response vrací **pole brandů** (`brandSentiments[]`), každý s hrubým skóre a keyword slovníky
+> - `totalSentimentScore` je **raw součet** (ne průměr) – průměr = `totalSentimentScore / sentimentCount` (škála 0–100)
+> - `avgSentiment` je pre-vypočítaný float přímo na objektu (float, škála 0–100)
+> - Klíčová slova jsou jako **objekt se stringovými klíči** (text klíčového slova), ne pole
+> - Každé klíčové slovo má `{count, executionIds[], timestamps[]}` – `executionIds` a `timestamps` jsou paralelní pole
+> - Vedle `positiveKeywords` existují také `neutralKeywords{}` a `negativeKeywords{}` – stejná struktura
+> - `webGroundingKeywords{}` a `trainingDataKeywords{}` rozkládají klíčová slova dle zdroje AI (webové vyhledávání vs. trénovací data)
+> - `webGroundingSentimentByEngine{}` a `trainingDataSentimentByEngine{}` dávají breakdown sentimentu per engine dle zdroje
 
 #### Request
 
@@ -1157,12 +1076,8 @@ Content-Type: application/json
 
 ```json
 {
-  "brandId": "brand_abc123",
-  "timeFrame": "30d",
-  "periodOffset": 0,
-  "selectedTopic": "all",
-  "selectedEngine": "all",
-  "selectedQuery": "all"
+  "brandId": "E5GAVmqco65u7Smx3hso",
+  "timeFrame": "7d"
 }
 ```
 
@@ -1171,13 +1086,13 @@ Content-Type: application/json
 | Pole | Typ | Povinný | Popis |
 |---|---|---|---|
 | `brandId` | string | ✅ | ID brandy |
-| `timeFrame` | string | | Časové okno |
+| `timeFrame` | string | | Časové okno: `24h`, `7d`, `30d`, `3m`, `1y` |
 | `periodOffset` | integer | | Posun o N period |
 | `selectedTopic` | string | | Filtr topicu nebo `"all"` |
 | `selectedEngine` | string\|array | | Filtr enginů nebo `"all"` |
 | `selectedQuery` | string | | Filtr search termu nebo `"all"` |
-| `isoStartDate` | string | | Vlastní začátek |
-| `isoEndDate` | string | | Vlastní konec |
+| `isoStartDate` | string | | Vlastní začátek (přepíše `timeFrame`) |
+| `isoEndDate` | string | | Vlastní konec (přepíše `timeFrame`) |
 
 #### Response
 
@@ -1185,27 +1100,87 @@ Content-Type: application/json
 {
   "success": true,
   "data": {
-    "overall": {
-      "score": 0.72,
-      "label": "positive",
-      "distribution": {
-        "positive": 0.65,
-        "neutral": 0.25,
-        "negative": 0.10
-      }
-    },
-    "byEngine": {
-      "chatgpt": { "score": 0.78, "label": "positive" },
-      "gemini": { "score": 0.65, "label": "positive" },
-      "perplexity": { "score": 0.73, "label": "positive" }
-    },
-    "timeSeries": [
+    "brandSentiments": [
       {
-        "date": "2026-03-15T00:00:00.000Z",
-        "score": 0.70,
-        "positive": 0.63,
-        "neutral": 0.27,
-        "negative": 0.10
+        "name": "Ceska sporitelna",
+        "totalSentimentScore": 12810,
+        "sentimentCount": 181,
+        "executionCount": 181,
+        "isOwnBrand": true,
+        "avgSentiment": 70.77,
+        "positiveCount": 331,
+        "neutralCount": 155,
+        "negativeCount": 64,
+        "hasWebGrounding": true,
+        "hasTrainingData": false,
+        "nameVariations": ["Česká spořitelna", "Spořitelna"],
+        "positiveKeywords": {
+          "stabilita": {
+            "count": 3,
+            "executionIds": ["QCns3PgAiQMdvPEyZc2L", "ZOgU43J8WzvkPoayAQgD"],
+            "timestamps": ["2026-05-19T06:08:02.769Z", "2026-05-19T06:08:46.467Z"]
+          },
+          "aplikace george": {
+            "count": 10,
+            "executionIds": ["mdcka2OihRSrunpmG7je", "..."],
+            "timestamps": ["2026-05-19T06:07:58.497Z", "..."]
+          }
+        },
+        "neutralKeywords": {
+          "půjčka na cokoliv": {
+            "count": 1,
+            "executionIds": ["DJVUKnS726RvDiiR7nqC"],
+            "timestamps": ["2026-05-19T06:06:57.815Z"]
+          }
+        },
+        "negativeKeywords": {
+          "vysoké poplatky": {
+            "count": 2,
+            "executionIds": ["abc123", "def456"],
+            "timestamps": ["2026-05-19T06:08:10.000Z", "2026-05-19T06:09:00.000Z"]
+          }
+        },
+        "webGroundingKeywords": {
+          "positive": {
+            "možností odkladu splátek": {
+              "count": 1,
+              "executionIds": ["DJVUKnS726RvDiiR7nqC"],
+              "timestamps": ["2026-05-19T06:06:57.815Z"]
+            }
+          },
+          "neutral": {
+            "půjčka na cokoliv": {
+              "count": 1,
+              "executionIds": ["DJVUKnS726RvDiiR7nqC"],
+              "timestamps": ["2026-05-19T06:06:57.815Z"]
+            }
+          },
+          "negative": {
+            "poplatky za sjednání": {
+              "count": 1,
+              "executionIds": ["YWC7abUuV6Qm68UVGF0v"],
+              "timestamps": ["2026-05-19T06:07:48.315Z"]
+            }
+          },
+          "byEngine": {
+            "google_ai_overview": {
+              "positive": { "možností odkladu splátek": { "count": 1, "executionIds": ["..."], "timestamps": ["..."] } },
+              "neutral": { "půjčka na cokoliv": { "count": 1, "executionIds": ["..."], "timestamps": ["..."] } },
+              "negative": { "3 až 8 týdnů": { "count": 1, "executionIds": ["..."], "timestamps": ["..."] } }
+            }
+          }
+        },
+        "trainingDataKeywords": {
+          "positive": {},
+          "neutral": {},
+          "negative": {},
+          "byEngine": {}
+        },
+        "webGroundingSentimentByEngine": {
+          "google_ai_overview": { "sum": 2231, "count": 31, "avg": 71.97 },
+          "google_ai_mode_gui": { "sum": 4580, "count": 65, "avg": 70.46 }
+        },
+        "trainingDataSentimentByEngine": {}
       }
     ]
   }
@@ -1214,42 +1189,100 @@ Content-Type: application/json
 
 #### Pole response
 
-**`data.overall{}`**
+**`data.brandSentiments[]`** – jeden objekt per brand
 
 | Pole | Typ | Popis |
 |---|---|---|
-| `score` | float | Celkový sentiment (**0–1**) |
-| `label` | string | `"positive"`, `"neutral"`, nebo `"negative"` |
-| `distribution.positive` | float | Podíl pozitivních zmínek (**0–1**, ne %) |
-| `distribution.neutral` | float | Podíl neutrálních zmínek |
-| `distribution.negative` | float | Podíl negativních zmínek |
+| `name` | string | Název brandu (**bez diakritiky** – `"Ceska sporitelna"`, ne `"Česká spořitelna"`) |
+| `totalSentimentScore` | integer | Raw součet všech sentiment skóre za dané období |
+| `sentimentCount` | integer | Počet sentiment měření (zmínek) |
+| `executionCount` | integer | Počet exekucí zahrnutých v analýze |
+| `isOwnBrand` | boolean | `true` pokud jde o vlastní brand |
+| `avgSentiment` | float | Pre-vypočítaný průměrný sentiment (**0–100**) – ekvivalent `totalSentimentScore / sentimentCount` |
+| `positiveCount` | integer | Počet unikátních pozitivních klíčových slov |
+| `neutralCount` | integer | Počet unikátních neutrálních klíčových slov |
+| `negativeCount` | integer | Počet unikátních negativních klíčových slov |
+| `hasWebGrounding` | boolean | Zda AI engine pro tento brand používal webové zdroje (web grounding) |
+| `hasTrainingData` | boolean | Zda AI engine použil trénovací data (bez webového vyhledávání) |
+| `nameVariations` | array | Různé varianty názvu brandu detekované AI, např. `["Česká spořitelna", "Spořitelna"]` |
+| `positiveKeywords` | object | Slovník pozitivních klíčových slov – viz níže |
+| `neutralKeywords` | object | Slovník neutrálních klíčových slov – stejná struktura jako `positiveKeywords` |
+| `negativeKeywords` | object | Slovník negativních klíčových slov – stejná struktura |
+| `webGroundingKeywords` | object | Klíčová slova roztříděná dle zdroje: webové vyhledávání – viz níže |
+| `trainingDataKeywords` | object | Klíčová slova z trénovacích dat AI – stejná struktura jako `webGroundingKeywords` |
+| `webGroundingSentimentByEngine` | object | Breakdown sentimentu z webových zdrojů per engine – viz níže |
+| `trainingDataSentimentByEngine` | object | Breakdown sentimentu z trénovacích dat per engine – prázdné pokud `hasTrainingData: false` |
 
-**`data.byEngine{}`** – klíč je název enginu
+> **Výpočet průměrného sentimentu:** `avgSentiment = totalSentimentScore / sentimentCount` → výsledek je na škále **0–100** (shoduje se s `avgSentiment` v ostatních endpointech). Pole `avgSentiment` je pre-vypočítaný float přímo v response.
+
+**`positiveKeywords{}` / `neutralKeywords{}` / `negativeKeywords{}`** – klíč je text klíčového slova
+
+Klíčová slova jsou **objekt, ne pole**. Každý klíč je string s textem klíčového slova (v jazyce search termu).
 
 | Pole | Typ | Popis |
 |---|---|---|
-| `[engine].score` | float | Sentiment score (0–1) |
-| `[engine].label` | string | `"positive"`, `"neutral"`, `"negative"` |
+| `[keyword].count` | integer | Celkový počet výskytů tohoto klíčového slova |
+| `[keyword].executionIds` | array | ID jednotlivých exekucí kde bylo slovo detekováno |
+| `[keyword].timestamps` | array | Timestampy exekucí – **paralelní pole** k `executionIds` |
 
-**`data.timeSeries[]`** – jeden záznam per agregační period
+> ⚠️ `executionIds` a `timestamps` jsou paralelní pole – index 0 v `executionIds` odpovídá indexu 0 v `timestamps`.
+
+> ⚠️ `count` nemusí odpovídat délce `executionIds` – jedno ID execution se může v poli opakovat vícekrát (keyword byl detekován vícekrát v rámci jedné exekuce).
+
+**`webGroundingKeywords{}`** – klíčová slova z webových zdrojů (a `trainingDataKeywords{}` analogicky)
+
+Objekt má 4 sub-klíče:
+
+| Sub-klíč | Typ | Popis |
+|---|---|---|
+| `positive` | object | Pozitivní klíčová slova z webového vyhledávání – stejná struktura jako `positiveKeywords` |
+| `neutral` | object | Neutrální klíčová slova |
+| `negative` | object | Negativní klíčová slova |
+| `byEngine` | object | Breakdown per engine – klíč je engine ID, hodnota má sub-klíče `positive`, `neutral`, `negative` se stejnou keyword strukturou |
+
+**`webGroundingSentimentByEngine{}`** – sentiment z webových zdrojů per engine
+
+Objekt je keyed by engine ID, každá hodnota:
 
 | Pole | Typ | Popis |
 |---|---|---|
-| `date` | timestamp | Datum periody |
-| `score` | float | Sentiment score (0–1) |
-| `positive` | float | Podíl pozitivních (0–1) |
-| `neutral` | float | Podíl neutrálních (0–1) |
-| `negative` | float | Podíl negativních (0–1) |
+| `sum` | integer | Součet sentiment skóre z webových zdrojů pro tento engine |
+| `count` | integer | Počet měření |
+| `avg` | float | Průměrný sentiment pro tento engine (**0–100**) |
 
-> ⚠️ Všechny hodnoty jsou **float 0–1**, ne procenta. `positive + neutral + negative ≈ 1.0`.
+#### Co se liší oproti oficiální dokumentaci
+
+| Oficiální dokumentace | Realita |
+|---|---|
+| `data.overall.score` (float 0–1) | **Neexistuje** |
+| `data.overall.label` (`"positive"` apod.) | **Neexistuje** |
+| `data.overall.distribution` | **Neexistuje** |
+| `data.byEngine{}` | **Neexistuje** |
+| `data.timeSeries[]` | **Neexistuje** |
+| Sentiment na škále 0–1 | `totalSentimentScore` je raw součet; průměr je na škále **0–100** |
+| Bez keyword breakdown | `positiveKeywords{}`, `neutralKeywords{}`, `negativeKeywords{}` + web/trainingData varianty |
+| Jeden souhrnný objekt | `brandSentiments[]` – **pole brandů** |
+| Název brandu s diakritikou | Název **bez diakritiky** (ASCII verze) |
+| Bez breakdown dle zdroje | `webGroundingKeywords{}` a `trainingDataKeywords{}` rozdělují klíčová slova dle zdroje AI |
+| Bez engine breakdown sentimentu | `webGroundingSentimentByEngine{}` a `trainingDataSentimentByEngine{}` |
+| Bez pre-count polí | `positiveCount`, `neutralCount`, `negativeCount` – počty unikátních klíčových slov per kategorie |
+| Bez `nameVariations` | `nameVariations[]` – detekované varianty jména brandu |
+| Bez `executionCount`, `isOwnBrand` | `executionCount` a `isOwnBrand` jsou součástí každého záznamu |
 
 ---
 
 ### POST /v1/metrics/citations
 
-Domény a URL které AI enginy citují jako zdroje při odpovídání na sledované search terms.
+Domény a URL které AI enginy citují jako zdroje při odpovídání na sledované search terms. Vrací souhrnný přehled nejcitovanějších domén a URL s počty výskytů.
 
-> ⏳ **Čeká na ověření reálným API response.**
+> ✅ **Ověřeno reálným API response.**
+
+> ⚠️ **Klíčová zjištění:**
+> - Struktura je **zásadně jiná** než dokumentace uváděla – žádné `citations[]`, `summary{}` ani `pagination{}`
+> - Souhrnné čítače jsou přímo na `data{}`, ne zanořené
+> - `paginationInfo{}` je mnohem detailnější objekt s cap limity
+> - `domainSummary.topDomainsOverall[]` je hlavní datová část – každá doména má vnořené `urls[]`
+> - Endpoint vrací **agregovaný přehled domén**, ne seznam jednotlivých citací s metadaty
 
 #### Request
 
@@ -1261,12 +1294,8 @@ Content-Type: application/json
 
 ```json
 {
-  "brandId": "brand_abc123",
-  "timeFrame": "30d",
-  "periodOffset": 0,
-  "selectedTopic": "all",
-  "selectedEngine": "all",
-  "selectedQuery": "all"
+  "brandId": "E5GAVmqco65u7Smx3hso",
+  "timeFrame": "30d"
 }
 ```
 
@@ -1275,15 +1304,13 @@ Content-Type: application/json
 | Pole | Typ | Povinný | Popis |
 |---|---|---|---|
 | `brandId` | string | ✅ | ID brandy |
-| `timeFrame` | string | | Časové okno |
+| `timeFrame` | string | | Časové okno: `24h`, `7d`, `30d`, `3m`, `1y` |
 | `periodOffset` | integer | | Posun o N period |
 | `selectedTopic` | string | | Filtr topicu nebo `"all"` |
 | `selectedEngine` | string\|array | | Filtr enginů nebo `"all"` |
 | `selectedQuery` | string | | Filtr search termu nebo `"all"` |
-| `limit` | integer | | Max záznamů per stránka (výchozí 50) |
-| `offset` | integer | | Offset pro stránkování |
-| `isoStartDate` | string | | Vlastní začátek |
-| `isoEndDate` | string | | Vlastní konec |
+| `isoStartDate` | string | | Vlastní začátek (přepíše `timeFrame`) |
+| `isoEndDate` | string | | Vlastní konec (přepíše `timeFrame`) |
 
 #### Response
 
@@ -1291,33 +1318,266 @@ Content-Type: application/json
 {
   "success": true,
   "data": {
-    "citations": [
-      {
-        "url": "https://collectorboy.cz/hot-toys-recenze",
-        "title": "Hot Toys recenze 2025 – CollectorBoy",
-        "domain": "collectorboy.cz",
-        "engine": "perplexity",
-        "searchTermId": "st_abc123",
-        "query": "kde koupit Hot Toys figury v ČR",
-        "firstSeen": "2026-03-10T12:00:00.000Z",
-        "lastSeen": "2026-04-27T08:00:00.000Z",
-        "count": 15
-      }
-    ],
-    "summary": {
-      "totalCitations": 156,
-      "uniqueUrls": 42,
-      "uniqueDomains": 18,
-      "topDomains": [
-        { "domain": "collectorboy.cz", "count": 24 },
-        { "domain": "mall.cz", "count": 18 }
+    "totalCitations": 7058,
+    "uniqueCitations": 2180,
+    "uniqueDomains": 534,
+    "totalBrands": 24,
+    "timestampFormat": "daily",
+    "paginationInfo": {
+      "hasMore": false,
+      "totalCount": 2180,
+      "returnedCount": 2180,
+      "citationsCapped": false,
+      "brandsCapped": false,
+      "capBypassed": false,
+      "maxCitations": 5000,
+      "maxBrands": 50,
+      "responseTrimmed": false,
+      "returnedDomainCount": 534,
+      "totalDomainCount": 534
+    },
+    "domainSummary": {
+      "topDomainsOverall": [
+        {
+          "domain": "banky.cz",
+          "occurrences": 772,
+          "urls": [
+            { "url": "https://www.banky.cz/hypoteka", "occurrences": 31 },
+            { "url": "https://www.banky.cz/prehled-a-porovnani/hypoteky-na-bydleni", "occurrences": 32 }
+          ]
+        }
+      ],
+      "topDomainsByEngine": [
+        {
+          "engineId": "bing_copilot_gui",
+          "domains": [
+            { "domain": "banky.cz", "occurrences": 69, "urls": [{ "url": "https://...", "occurrences": 10 }] }
+          ]
+        }
+      ],
+      "topDomainsByQuery": [
+        {
+          "query": "Která banka nabízí nejlepší výhody pro mladé klienty?",
+          "searchTermIds": ["zr9vMtv0MBbtng8KTglh"],
+          "engines": [
+            {
+              "engineId": "bing_copilot_gui",
+              "domains": [{ "domain": "csas.cz", "occurrences": 4, "urls": [{ "url": "https://...", "occurrences": 4 }] }]
+            }
+          ]
+        }
+      ],
+      "topDomainsByOwnBrandCitations": [
+        {
+          "domain": "csas.cz",
+          "occurrences": 143,
+          "urls": [{ "url": "https://www.csas.cz/cs/osobni-finance/pujcky/pujcka", "occurrences": 22 }]
+        }
+      ],
+      "topDomainsByCompetitor": [
+        {
+          "brandName": "Air Bank",
+          "occurrences": 606,
+          "domains": [
+            { "domain": "airbank.cz", "occurrences": 205, "urls": [{ "url": "https://www.airbank.cz/produkty/pujcka", "occurrences": 37 }] }
+          ]
+        }
       ]
     },
-    "pagination": {
-      "total": 156,
-      "limit": 50,
-      "offset": 0,
-      "hasMore": true
+    "citationsByDomain": [
+      {
+        "domain": "banky.cz",
+        "occurrences": 772,
+        "citations": ["..."]
+      }
+    ]
+  }
+}
+```
+
+#### Pole response
+
+**`data{}`** – kořenové souhrnné čítače
+
+| Pole | Typ | Popis |
+|---|---|---|
+| `totalCitations` | integer | Celkový počet citací (včetně duplicit) |
+| `uniqueCitations` | integer | Počet unikátních URL citací |
+| `uniqueDomains` | integer | Počet unikátních domén |
+| `totalBrands` | integer | Počet brandů zahrnutých v response |
+| `timestampFormat` | string | Granularita časových dat, např. `"daily"` |
+
+**`data.paginationInfo{}`** – informace o limitech a stránkování
+
+| Pole | Typ | Popis |
+|---|---|---|
+| `hasMore` | boolean | Existují další stránky? |
+| `totalCount` | integer | Celkový počet unikátních citací |
+| `returnedCount` | integer | Počet vrácených citací v tomto response |
+| `citationsCapped` | boolean | Byl response oříznut limitem `maxCitations`? |
+| `brandsCapped` | boolean | Byl response oříznut limitem `maxBrands`? |
+| `capBypassed` | boolean | Byl cap limit obejit (např. admin přístupem)? |
+| `maxCitations` | integer | Maximální počet citací v response (výchozí 5000) |
+| `maxBrands` | integer | Maximální počet brandů v response (výchozí 50) |
+| `responseTrimmed` | boolean | Byl response celkově oříznut? |
+| `returnedDomainCount` | integer | Počet vrácených domén |
+| `totalDomainCount` | integer | Celkový počet unikátních domén |
+
+**`data.domainSummary{}`** – přehledy domén z různých úhlů pohledu
+
+`domainSummary` obsahuje 5 sub-klíčů:
+
+| Sub-klíč | Počet položek | Popis |
+|---|---|---|
+| `topDomainsOverall[]` | max 20 | Top domény celkově dle `occurrences` |
+| `topDomainsByEngine[]` | per engine | Top domény roztříděné dle engine |
+| `topDomainsByQuery[]` | per search term | Top domény roztříděné dle query/search termu |
+| `topDomainsByOwnBrandCitations[]` | max 20 | Top domény specificky pro citace vlastního brandu |
+| `topDomainsByCompetitor[]` | max 10 | Top domény per competitor brand |
+
+**`topDomainsOverall[]`** – stejná struktura jako `topDomainsByOwnBrandCitations[]`
+
+| Pole | Typ | Popis |
+|---|---|---|
+| `domain` | string | Název domény, např. `"banky.cz"` |
+| `occurrences` | integer | Celkový počet výskytů domény v AI citacích |
+| `urls[]` | array | Nejcitovanější URL z této domény – viz níže |
+
+**`urls[]`** – vnořené URL v rámci domény (uvnitř všech domainSummary polí)
+
+| Pole | Typ | Popis |
+|---|---|---|
+| `url` | string | Plná URL citovaná AI enginy |
+| `occurrences` | integer | Počet výskytů této konkrétní URL |
+
+> `urls[]` jsou seřazeny sestupně dle `occurrences`.
+
+**`topDomainsByEngine[]`** – domény per AI engine
+
+| Pole | Typ | Popis |
+|---|---|---|
+| `engineId` | string | ID enginu, např. `"bing_copilot_gui"` |
+| `domains[]` | array | Top domény pro tento engine – každá položka má `domain`, `occurrences`, `urls[]` |
+
+**`topDomainsByQuery[]`** – domény per search term/query
+
+| Pole | Typ | Popis |
+|---|---|---|
+| `query` | string | Text search termu |
+| `searchTermIds` | array | Pole ID search termů s tímto znění (může být víc na různých enginech) |
+| `engines[]` | array | Per engine breakdown – každá položka má `engineId`, `domains[]` se stejnou strukturou |
+
+**`topDomainsByCompetitor[]`** – domény per competitor brand
+
+| Pole | Typ | Popis |
+|---|---|---|
+| `brandName` | string | Název competitor brandu |
+| `occurrences` | integer | Celkový počet citací tohoto brandu |
+| `domains[]` | array | Domény citované v kontextu tohoto brandu – každá položka má `domain`, `occurrences`, `urls[]` |
+
+**`data.citationsByDomain[]`** – podrobný seznam citací per doména (534 položek v ukázce)
+
+| Pole | Typ | Popis |
+|---|---|---|
+| `domain` | string | Název domény |
+| `occurrences` | integer | Celkový počet výskytů |
+| `citations` | array | Podrobný seznam citací z této domény |
+
+> `citationsByDomain[]` je výrazně detailnější než `domainSummary` – obsahuje všechny domény (ne jen top N), ale struktura `citations[]` pole nebyla blíže zkoumána.
+
+#### Co se liší oproti oficiální dokumentaci
+
+| Oficiální dokumentace | Realita |
+|---|---|
+| `data.citations[]` – pole jednotlivých citací s metadaty | **Neexistuje** – endpoint vrací agregát, ne seznam |
+| `data.summary{}` | **Neexistuje** – souhrnné čítače jsou přímo na `data{}` |
+| `data.pagination{}` (total, limit, offset, hasMore) | `data.paginationInfo{}` – zcela jiný objekt s cap limity |
+| `data.summary.uniqueUrls` | `data.uniqueCitations` |
+| `data.summary.topDomains[].count` | `topDomainsOverall[].occurrences` |
+| Každá doména bez vnořených URL | `urls[]` – každá doména má pole nejcitovanějších URL |
+| `title`, `engine`, `searchTermId`, `query`, `firstSeen`, `lastSeen` na citaci | **Neexistují** – endpoint nevrací detail per citace |
+| Stránkování přes `limit`/`offset` | `paginationInfo.citationsCapped` / `maxCitations` – cap model, ne offset |
+| `data.summary.totalCitations` | `data.totalCitations` přímo na kořenu |
+| Bez `totalBrands` | `data.totalBrands` – počet brandů v response |
+| Bez `timestampFormat` | `data.timestampFormat` – granularita (`"daily"`) |
+| `domainSummary` pouze s `topDomains[]` | `domainSummary` má 5 sub-klíčů: `topDomainsOverall`, `topDomainsByEngine`, `topDomainsByQuery`, `topDomainsByOwnBrandCitations`, `topDomainsByCompetitor` |
+| Bez `citationsByDomain` | `citationsByDomain[]` – kompletní seznam 534 domén s citacemi |
+
+---
+
+### GET /v1/metrics/credits
+
+Vrací aktuální stav kreditů workspace a odhad runway (jak dlouho kredity vydrží na základě průměrné spotřeby).
+
+> ✅ **Ověřeno reálným API response.**
+
+> ⚠️ **Klíčová zjištění:**
+> - Endpoint je **GET**, ne POST – nepřijímá `brandId` ani časové parametry
+> - `nextBilling` je ve formátu Firestore Timestamp (`{ _seconds, _nanoseconds }`), ne ISO string
+> - `runway.estimatedRunwayHours` je float – pro dny děl 24
+> - `dashboardRunway.metrics.runwayDays` může být `null` pokud je runway omezena billingem, ne spotřebou
+
+#### Request
+
+```http
+GET /v1/metrics/credits
+Authorization: Bearer rk_your_api_key_here
+```
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "rankCredits": 5247,
+    "bonusRankCredits": 0,
+    "analysisCredits": 200,
+    "promptResearchCredits": 10,
+    "creditsInFlight": 0,
+    "runway": {
+      "estimatedRunwayHours": 126.15,
+      "creditsPerHourAvg": 0.376,
+      "totalCostForNextExecution": 63.25,
+      "nextBilling": {
+        "_seconds": 1779810185,
+        "_nanoseconds": 0
+      },
+      "simulationLimitedByBilling": true,
+      "simulationLimitedByHorizon": false,
+      "breakdown": {
+        "hourly": 0,
+        "daily": 0,
+        "weekly": 253,
+        "monthly": 0
+      }
+    },
+    "dashboardRunway": {
+      "isRunwayWarning": false,
+      "runwayDays": null,
+      "daysUntilValidUntil": 6,
+      "metrics": {
+        "creditsPerDay": 9.04,
+        "rankCredits": 5247,
+        "bonusRankCredits": 0,
+        "analysisCredits": 200,
+        "promptResearchCredits": 10,
+        "runwayDays": null,
+        "daysUntilValidUntil": 6,
+        "isRunwayWarning": false,
+        "executionsPerHour": 1.51,
+        "executionsPerDay": 36.14,
+        "executionsPerWeek": 253,
+        "executionsPerMonth": 1084.29,
+        "breakdown": {
+          "hourly": 0,
+          "daily": 0,
+          "weekly": 253,
+          "monthly": 0
+        },
+        "simulationLimitedByBilling": true,
+        "simulationLimitedByHorizon": false
+      }
     }
   }
 }
@@ -1325,51 +1585,145 @@ Content-Type: application/json
 
 #### Pole response
 
-**`data.citations[]`**
+**Kreditové zůstatky** – přímo na `data{}`
 
 | Pole | Typ | Popis |
 |---|---|---|
-| `url` | string | Citovaná URL |
-| `title` | string | Titulek stránky |
-| `domain` | string | Doména |
-| `engine` | string | Engine kde se citace objevila |
-| `searchTermId` | string | ID search termu ke kterému se váže |
-| `query` | string | Znění search termu |
-| `firstSeen` | timestamp | Kdy byla citace poprvé zaznamenána |
-| `lastSeen` | timestamp | Kdy byla naposledy viděna |
-| `count` | integer | Celkový počet výskytů |
+| `rankCredits` | integer | Aktuální počet rank kreditů |
+| `bonusRankCredits` | integer | Bonusové rank kredity (nad rámec předplatného) |
+| `analysisCredits` | integer | Analýzové kredity |
+| `promptResearchCredits` | integer | Kredity pro prompt research |
+| `creditsInFlight` | integer | Kredity aktuálně blokované probíhajícími exekucemi |
 
-**`data.summary{}`**
+**`data.runway{}`** – odhad vytrvalosti kreditů
 
 | Pole | Typ | Popis |
 |---|---|---|
-| `totalCitations` | integer | Celkový počet citací |
-| `uniqueUrls` | integer | Počet unikátních URL |
-| `uniqueDomains` | integer | Počet unikátních domén |
-| `topDomains[]` | array | Nejcitovanější domény: `{ domain, count }` |
+| `estimatedRunwayHours` | float | Odhadovaný počet hodin než dojdou kredity |
+| `creditsPerHourAvg` | float | Průměrná spotřeba kreditů za hodinu |
+| `totalCostForNextExecution` | float | Cena příští naplánované exekuce v kreditech |
+| `nextBilling._seconds` | integer | Unix timestamp příštího billing cyklu (Firestore formát) |
+| `nextBilling._nanoseconds` | integer | Nanosekundová část timestampu (obvykle `0`) |
+| `simulationLimitedByBilling` | boolean | `true` = runway je omezena billing datem, ne spotřebou kreditů |
+| `simulationLimitedByHorizon` | boolean | `true` = simulace dosáhla časového horizontu |
+| `breakdown.hourly` | integer | Počet hodinových exekucí per periodu |
+| `breakdown.daily` | integer | Počet denních exekucí per periodu |
+| `breakdown.weekly` | integer | Počet týdenních exekucí per periodu |
+| `breakdown.monthly` | integer | Počet měsíčních exekucí per periodu |
 
-**`data.pagination{}`**
+> ⚠️ `nextBilling` je Firestore Timestamp – pro převod na datum: `new Date(nextBilling._seconds * 1000)`
+
+> ⚠️ Pokud je `simulationLimitedByBilling: true`, runway odpovídá době do příštího billing cyklu, ne reálné spotřebě – `runwayDays` bude `null`.
+
+**`data.dashboardRunway{}`** – dashboard-level runway info
 
 | Pole | Typ | Popis |
 |---|---|---|
-| `total` | integer | Celkový počet záznamů |
-| `limit` | integer | Počet záznamů na stránce |
-| `offset` | integer | Aktuální offset |
-| `hasMore` | boolean | Existuje další stránka? |
+| `isRunwayWarning` | boolean | `true` = runway je kriticky nízká (zobrazit varování) |
+| `runwayDays` | float \| null | Počet dní zbývajících kreditů; `null` pokud limitováno billingem |
+| `daysUntilValidUntil` | integer | Počet dní do konce platnosti předplatného |
 
-#### Stránkování
+**`data.dashboardRunway.metrics{}`** – detailní metriky pro dashboard
+
+| Pole | Typ | Popis |
+|---|---|---|
+| `creditsPerDay` | float | Průměrná denní spotřeba kreditů |
+| `executionsPerHour` | float | Průměrný počet exekucí za hodinu |
+| `executionsPerDay` | float | Průměrný počet exekucí za den |
+| `executionsPerWeek` | float | Průměrný počet exekucí za týden |
+| `executionsPerMonth` | float | Průměrný počet exekucí za měsíc |
+| `breakdown{}` | object | Stejný formát jako `runway.breakdown` |
+| `simulationLimitedByBilling` | boolean | Viz `runway.simulationLimitedByBilling` |
+| `simulationLimitedByHorizon` | boolean | Viz `runway.simulationLimitedByHorizon` |
+
+> `metrics{}` obsahuje duplicitní pole (`rankCredits`, `bonusRankCredits` atd.) – jsou totožné s hodnotami na `data{}`.
+
+---
+
+### GET /v1/metrics/topics
+
+Vrátí seznam všech topiců pro danou brandy. Topicy jsou tematické skupiny pro organizaci search termů. Každý topic obsahuje pole `searchTermIds` – seznam ID search termů přiřazených k danému topicu.
+
+> ✅ **Ověřeno reálným API response.**
+
+> ⚠️ **Klíčová zjištění:**
+> - Parametr se jmenuje `brandRef` (ne `brandId` jako u ostatních endpointů)
+> - `createdAt` a `updatedAt` jsou Firestore Timestamp objekty (`{ _seconds, _nanoseconds }`)
+> - `updatedAt` **nemusí být vždy přítomno** – topics bez přiřazených search termů ho mohou postrádat
+> - `searchTermIds[]` obsahuje ID ve formátu z `GET /v1/metrics/search-terms` (pole `id`)
+> - `keywords` je vždy prázdný string – pole se zatím nepoužívá
+
+#### Request
 
 ```http
-# Stránka 1 (výchozí)
-POST /v1/metrics/citations
-{ "brandId": "...", "limit": 50, "offset": 0 }
-
-# Stránka 2
-POST /v1/metrics/citations
-{ "brandId": "...", "limit": 50, "offset": 50 }
-
-# Opakuj dokud hasMore = false
+GET /v1/metrics/topics?brandRef=E5GAVmqco65u7Smx3hso
+Authorization: Bearer rk_your_api_key_here
 ```
+
+#### Query parametry
+
+| Parametr | Typ | Povinný | Popis |
+|---|---|---|---|
+| `brandRef` | string | ✅ | ID brandy (stejná hodnota jako `brandId` u jiných endpointů) |
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "topics": [
+      {
+        "id": "ZFyMrgG0cuuEAvCdf1nr",
+        "name": "Brand",
+        "description": "",
+        "brandRef": "E5GAVmqco65u7Smx3hso",
+        "myBrand": "Česká spořitelna",
+        "createdAt": { "_seconds": 1769496543, "_nanoseconds": 580000000 },
+        "updatedAt": { "_seconds": 1771403386, "_nanoseconds": 600000000 },
+        "createdBy": "hwSqTrrKF1ZaC98LamviUz9Bvqw1",
+        "searchTermIds": ["xS7FDRiCviDIlTtUg80f", "a4pXbk0OMnHGvZrWlBUi"],
+        "keywords": ""
+      },
+      {
+        "id": "A4tgfyAXO2ekw5L64DNY",
+        "name": "Hypotéky",
+        "description": "",
+        "brandRef": "E5GAVmqco65u7Smx3hso",
+        "myBrand": "Česká spořitelna",
+        "createdAt": { "_seconds": 1769503575, "_nanoseconds": 556000000 },
+        "updatedAt": { "_seconds": 1769503575, "_nanoseconds": 556000000 },
+        "createdBy": "hwSqTrrKF1ZaC98LamviUz9Bvqw1",
+        "searchTermIds": [],
+        "keywords": ""
+      }
+    ]
+  }
+}
+```
+
+#### Pole response
+
+**`data.topics[]`** – jeden objekt per topic
+
+| Pole | Typ | Popis |
+|---|---|---|
+| `id` | string | **Unikátní ID topicu** – používej jako `selectedTopic` v reporting endpointech |
+| `name` | string | Název topicu, např. `"Brand"`, `"Hypotéky"`, `"Půjčky/Úvěry"` |
+| `description` | string | Popis topicu (v praxi vždy prázdný string) |
+| `brandRef` | string | ID brandy ke které topic patří |
+| `myBrand` | string | Název brandy (s diakritikou), např. `"Česká spořitelna"` |
+| `createdAt` | object | Firestore Timestamp – kdy byl topic vytvořen |
+| `updatedAt` | object | Firestore Timestamp – kdy byl naposledy upraven; **chybí** u topics bez search termů |
+| `createdBy` | string | ID uživatele který topic vytvořil |
+| `searchTermIds` | array | Pole ID search termů přiřazených k tomuto topicu; prázdné `[]` pokud žádné nejsou |
+| `keywords` | string | Vždy prázdný string – pole se zatím nepoužívá |
+
+> ⚠️ `createdAt` a `updatedAt` jsou Firestore Timestamp – pro převod: `new Date(createdAt._seconds * 1000)`
+
+> ⚠️ `searchTermIds` odkazují na pole `id` z `GET /v1/metrics/search-terms` – jde o ID záznamu prompt×engine, **ne** o ID promptu. Jeden prompt může mít více `searchTermId` (jeden per engine).
+
+> ⚠️ Parametr se jmenuje `brandRef`, ale hodnota je totožná s `brandId` používaným u ostatních endpointů.
 
 ---
 
