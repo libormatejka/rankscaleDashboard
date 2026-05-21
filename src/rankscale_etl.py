@@ -85,6 +85,64 @@ def api_post(path: str, body: dict) -> dict:
     return r.json()
 
 
+# ── Explicitní schémata fact tabulek ──────────────────────────────────────────
+# Potřebujeme je pro `ensure_fact_table` – tabulka se vytvoří automaticky
+# pokud neexistuje (např. po DROP nebo při prvním nasazení).
+
+FACT_BRAND_SNAPSHOTS_SCHEMA = [
+    bigquery.SchemaField("snapshot_date",   "DATE",      mode="REQUIRED"),
+    bigquery.SchemaField("snapshot_week",   "STRING",    mode="REQUIRED"),
+    bigquery.SchemaField("search_term_id",  "STRING",    mode="REQUIRED"),
+    bigquery.SchemaField("brand_name",      "STRING",    mode="REQUIRED"),
+    bigquery.SchemaField("is_own_brand",    "BOOL",      mode="REQUIRED"),
+    bigquery.SchemaField("brand_id",        "STRING"),
+    bigquery.SchemaField("visibility_score","FLOAT64"),
+    bigquery.SchemaField("avg_sentiment",   "FLOAT64"),
+    bigquery.SchemaField("avg_rank",        "FLOAT64"),
+    bigquery.SchemaField("latest_rank",     "INT64"),
+    bigquery.SchemaField("detection_rate",  "FLOAT64"),
+    bigquery.SchemaField("top3_rate",       "FLOAT64"),
+    bigquery.SchemaField("citation_count",  "INT64"),
+    bigquery.SchemaField("appearances",     "INT64"),
+    bigquery.SchemaField("query",           "STRING"),
+    bigquery.SchemaField("topic_name",      "STRING"),
+    bigquery.SchemaField("engine",          "STRING"),
+    bigquery.SchemaField("last_snapshot_at","TIMESTAMP"),
+    bigquery.SchemaField("loaded_at",       "TIMESTAMP"),
+]
+
+FACT_ANSWER_TEXTS_SCHEMA = [
+    bigquery.SchemaField("execution_id",   "STRING",    mode="REQUIRED"),
+    bigquery.SchemaField("search_term_id", "STRING",    mode="REQUIRED"),
+    bigquery.SchemaField("executed_at",    "TIMESTAMP", mode="REQUIRED"),
+    bigquery.SchemaField("engine",         "STRING"),
+    bigquery.SchemaField("query",          "STRING"),
+    bigquery.SchemaField("topic_name",     "STRING"),
+    bigquery.SchemaField("answer_text",    "STRING"),
+    bigquery.SchemaField("loaded_at",      "TIMESTAMP"),
+]
+
+
+def ensure_fact_table(client: bigquery.Client, target: str,
+                      schema: list, partition_field: str,
+                      cluster_fields: list[str] = None) -> None:
+    """Vytvoří partitioned fact tabulku pokud neexistuje. Idempotentní."""
+    raw = target.replace("`", "")
+    table_ref = bigquery.TableReference.from_string(raw)
+    table = bigquery.Table(table_ref, schema=schema)
+    table.time_partitioning = bigquery.TimePartitioning(
+        type_=bigquery.TimePartitioningType.DAY,
+        field=partition_field,
+    )
+    if cluster_fields:
+        table.clustering_fields = cluster_fields
+    try:
+        client.create_table(table)
+        log.info(f"    Tabulka {target} vytvořena (neexistovala)")
+    except Exception:
+        pass  # již existuje
+
+
 # ── BQ load helpers ────────────────────────────────────────────────────────────
 def _prepare(rows: list[dict]) -> list[dict]:
     """Převede dict/list hodnoty na JSON string, přidá loaded_at."""
@@ -98,12 +156,12 @@ def _prepare(rows: list[dict]) -> list[dict]:
 
 
 def _load(client: bigquery.Client, target: str, rows: list[dict],
-          disposition: str) -> None:
+          disposition: str, autodetect: bool = False) -> None:
     target_ref = bigquery.TableReference.from_string(target.replace("`", ""))
     cfg = bigquery.LoadJobConfig(
         write_disposition=disposition,
         source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-        autodetect=False,
+        autodetect=autodetect,
     )
     ndjson = "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in rows)
     job = client.load_table_from_file(io.BytesIO(ndjson.encode()), target_ref, job_config=cfg)
@@ -113,13 +171,14 @@ def _load(client: bigquery.Client, target: str, rows: list[dict],
 
 
 def bq_truncate(client: bigquery.Client, target: str, rows: list[dict]) -> None:
-    """Nahradí celý obsah tabulky. Vhodné pro dim tabulky."""
+    """Nahradí celý obsah tabulky. Vhodné pro dim tabulky.
+    autodetect=True: schema se odvozuje z dat, takže DDL v BQ nemusí být přesné."""
     if not rows:
         log.warning(f"    žádná data pro {target}, přeskakuji")
         return
     prepared = _prepare(rows)
     log.info(f"    TRUNCATE → {target} ({len(prepared)} řádků)")
-    _load(client, target, prepared, bigquery.WriteDisposition.WRITE_TRUNCATE)
+    _load(client, target, prepared, bigquery.WriteDisposition.WRITE_TRUNCATE, autodetect=True)
 
 
 def bq_partition_overwrite(client: bigquery.Client, target: str, rows: list[dict],
@@ -184,6 +243,45 @@ def iso_week(ts: Optional[str]) -> str:
 # ETL KROKY
 # ══════════════════════════════════════════════════════════════════════════════
 
+def has_new_snapshots(client: bigquery.Client, terms: list[dict]) -> bool:
+    """
+    Porovná nejnovější Rankscale snapshot s posledním záznamem v BQ.
+    Vrátí True jen pokud jsou opravdu nová data → ušetří 2 API cally/den.
+    """
+    # Nejnovější execution z Rankscale (z již stažených search-terms, bez extra API callu)
+    api_latest_str = max(
+        (t.get("lastExecutionTime") for t in terms if t.get("lastExecutionTime")),
+        default=None,
+    )
+    if not api_latest_str:
+        return True  # fallback: nevíme, raději stáhni
+
+    api_latest = datetime.fromisoformat(api_latest_str.replace("Z", "+00:00"))
+
+    # Nejnovější snapshot v BQ (prázdná tabulka = None)
+    try:
+        result = list(client.query(
+            f"SELECT MAX(last_snapshot_at) AS latest FROM {tbl('fact_brand_snapshots')}"
+        ).result())
+        bq_latest = result[0]["latest"] if result else None
+    except Exception:
+        return True  # tabulka neexistuje nebo prázdná → stahuj
+
+    if bq_latest is None:
+        return True
+
+    # Přidej timezone info pokud chybí (BQ vrací naive datetime)
+    if bq_latest.tzinfo is None:
+        bq_latest = bq_latest.replace(tzinfo=timezone.utc)
+
+    fresh = api_latest > bq_latest
+    if not fresh:
+        log.info(f"    Žádná nová data (BQ={bq_latest.date()}, API={api_latest.date()}) – přeskakuji kroky 3+4")
+    else:
+        log.info(f"    Nová data detekována ({api_latest.date()}), spouštím stahování")
+    return fresh
+
+
 def step_brands(client: bigquery.Client) -> str:
     """
     GET /v1/metrics/brands → dim_brands
@@ -208,9 +306,10 @@ def step_brands(client: bigquery.Client) -> str:
     return brands[0]["id"]
 
 
-def step_search_terms(client: bigquery.Client, brand_id: str) -> None:
+def step_search_terms(client: bigquery.Client, brand_id: str) -> list[dict]:
     """
     GET /v1/metrics/search-terms → dim_search_terms
+    Vrátí seznam termů – použijeme ho i pro freshness check (bez extra API callu).
     Pozor: reálné klíče jsou "id" (ne searchTermId) a "term" (ne query).
     """
     log.info("━━ KROK 2: dim_search_terms")
@@ -222,9 +321,9 @@ def step_search_terms(client: bigquery.Client, brand_id: str) -> None:
     for t in terms:
         topic = t.get("searchTermTopicRef") or {}
         rows.append({
-            "search_term_id": t["id"],                         # klíč je "id", ne "searchTermId"
+            "search_term_id": t["id"],
             "brand_id":       brand_id,
-            "query":          t.get("term"),                   # klíč je "term", ne "query"
+            "query":          t.get("term"),
             "topic_id":       topic.get("id"),
             "topic_name":     topic.get("name"),
             "engine":         (t.get("aiSearchEngines") or [""])[0],
@@ -235,6 +334,7 @@ def step_search_terms(client: bigquery.Client, brand_id: str) -> None:
         })
 
     bq_truncate(client, tbl("dim_search_terms"), rows)
+    return terms   # ← vrátíme raw terms pro freshness check
 
 
 def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
@@ -246,6 +346,12 @@ def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
     snapshot_date = DATE(lastSnapshotAt) → partition overwrite zachová historii.
     """
     log.info("━━ KROK 3: fact_brand_snapshots")
+    ensure_fact_table(
+        client, tbl("fact_brand_snapshots"),
+        schema=FACT_BRAND_SNAPSHOTS_SCHEMA,
+        partition_field="snapshot_date",
+        cluster_fields=["is_own_brand", "topic_name", "engine"],
+    )
     data  = api_post("/v1/metrics/search-terms-report", {
         "brandId":            brand_id,
         "timeFrame":          TIME_FRAME,
@@ -273,7 +379,7 @@ def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
                 "snapshot_date":   snap_date,
                 "snapshot_week":   snap_week,
                 "search_term_id":  t["searchTermId"],
-                "brand_name":      brand_data.get("name"),
+                "brand_name":      brand_data.get("name") or "unknown",  # REQUIRED – nesmí být NULL
                 "is_own_brand":    is_own,
                 "brand_id":        brand_id if is_own else None,
                 # metriky
@@ -308,6 +414,12 @@ def step_answer_texts(client: bigquery.Client, brand_id: str) -> None:
     Append + dedup podle execution_id (exekuce jsou unikátní navždy).
     """
     log.info("━━ KROK 4: fact_answer_texts")
+    ensure_fact_table(
+        client, tbl("fact_answer_texts"),
+        schema=FACT_ANSWER_TEXTS_SCHEMA,
+        partition_field="executed_at",
+        cluster_fields=["engine"],
+    )
     data  = api_post("/v1/metrics/search-terms-report", {
         "brandId":            brand_id,
         "timeFrame":          TIME_FRAME,
@@ -352,9 +464,13 @@ def main() -> None:
     brand_id = step_brands(client)
     log.info(f"    brand_id = {brand_id}")
 
-    step_search_terms(client, brand_id)
-    step_brand_snapshots(client, brand_id)
-    step_answer_texts(client, brand_id)
+    terms = step_search_terms(client, brand_id)
+
+    if has_new_snapshots(client, terms):
+        step_brand_snapshots(client, brand_id)
+        step_answer_texts(client, brand_id)
+    else:
+        log.info("    Žádná nová data – kroky 3 a 4 přeskočeny")
 
     log.info("╔══════════════════════════════════════════════╗")
     log.info("║  ETL dokončen  ✓                             ║")

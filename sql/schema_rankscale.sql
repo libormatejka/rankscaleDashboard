@@ -4,7 +4,10 @@
 -- Dataset:  RankScaleDashboard
 -- ============================================================
 -- Spusť celý soubor v BigQuery Console (Query editor).
--- Všechny příkazy jsou idempotentní (CREATE TABLE IF NOT EXISTS).
+--
+-- dim_* tabulky: CREATE OR REPLACE (bezpečné, ETL je vždy přepíše)
+-- fact_* tabulky: DROP + CREATE (spusť jen při inicializaci nebo
+--   pokud chceš smazat všechna data)
 -- ============================================================
 
 
@@ -13,7 +16,7 @@
 -- Zdroj: GET /v1/metrics/brands
 -- Strategie: WRITE_TRUNCATE (malá tabulka, každý den se přepíše)
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.dim_brands` (
+CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.dim_brands` (
   brand_id          STRING    NOT NULL,   -- Rankscale brand ID
   name              STRING    NOT NULL,   -- název brandu
   domain            STRING,               -- doména (pokud dostupná)
@@ -28,7 +31,7 @@ CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.dim_brands` (
 -- Zdroj: GET /v1/metrics/search-terms
 -- Strategie: WRITE_TRUNCATE (malá tabulka, každý den se přepíše)
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.dim_search_terms` (
+CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.dim_search_terms` (
   search_term_id  STRING    NOT NULL,   -- Rankscale searchTermId (query × engine)
   brand_id        STRING    NOT NULL,   -- FK → dim_brands.brand_id
   query           STRING    NOT NULL,   -- text promptu posílaného AI enginu
@@ -52,7 +55,8 @@ CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.dim_search_terms`
 -- Obsahuje vlastní brand (is_own_brand = TRUE) i konkurenty.
 -- Kumuluje se každý týden → základ pro time-series reporting.
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.fact_brand_snapshots`
+DROP TABLE IF EXISTS `libor-matejkacz.RankScaleDashboard.fact_brand_snapshots`;
+CREATE TABLE `libor-matejkacz.RankScaleDashboard.fact_brand_snapshots`
 (
   -- Identifikace
   snapshot_date    DATE      NOT NULL,  -- datum ETL runu (PARTITION key)
@@ -92,7 +96,8 @@ CLUSTER BY is_own_brand, topic_name, engine;
 -- Raw texty AI odpovědí. Ukládají se jednou (execution_id je unikátní).
 -- Velká tabulka — spouštět méně často (týdně stačí).
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.fact_answer_texts`
+DROP TABLE IF EXISTS `libor-matejkacz.RankScaleDashboard.fact_answer_texts`;
+CREATE TABLE `libor-matejkacz.RankScaleDashboard.fact_answer_texts`
 (
   execution_id    STRING    NOT NULL,   -- Rankscale executionId (unikátní navždy)
   search_term_id  STRING    NOT NULL,   -- FK → dim_search_terms
