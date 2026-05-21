@@ -1,14 +1,22 @@
 """
 Rankscale Metrics API → BigQuery ETL
 Spouští se denně přes GitHub Actions.
+
+Tabulky (target):
+  dim_brands            – číselník brandů (WRITE_TRUNCATE)
+  dim_search_terms      – číselník search termů (WRITE_TRUNCATE)
+  fact_brand_snapshots  – metriky per brand per search term per týden (PARTITION OVERWRITE)
+  fact_answer_texts     – raw AI odpovědi (APPEND + dedup)
 """
 
-import os
-import time
+import io
 import json
 import logging
+import os
+import time
+from collections import defaultdict
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Optional
 
 import requests
 from google.cloud import bigquery
@@ -23,289 +31,222 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ── Konfigurace (z environment proměnných / GitHub Secrets) ───────────────────
-RANKSCALE_API_KEY  = os.environ["RANKSCALE_API_KEY"]      # rk_...
-GCP_PROJECT        = os.environ["GCP_PROJECT"]             # libor-matejkacz
-BQ_DATASET         = os.environ.get("BQ_DATASET", "RankscaleMetrics")
-GCP_CREDENTIALS    = os.environ.get("GCP_SA_JSON")         # JSON string service accountu
+# ── Konfigurace ────────────────────────────────────────────────────────────────
+RANKSCALE_API_KEY = os.environ["RANKSCALE_API_KEY"]
+GCP_PROJECT       = os.environ["GCP_PROJECT"]
+BQ_DATASET        = os.environ.get("BQ_DATASET", "RankScaleDashboard")
+GCP_SA_JSON       = os.environ.get("GCP_SA_JSON")
 
-BASE_URL           = "https://rankscale.ai"
-TIME_FRAME         = "7d"       # kolik dat táhneš při každém runu (překryv = bezpečný MERGE)
-AGGREGATION        = "daily"
-RATE_LIMIT_SLEEP   = 0.4        # sekund mezi voláními (max 200 req/min = 0.3s, dáme buffer)
-TODAY              = date.today().isoformat()
-NOW                = datetime.now(timezone.utc).isoformat()
+BASE_URL          = "https://rankscale.ai"
+TIME_FRAME        = os.environ.get("TIME_FRAME", "7d")
+RATE_LIMIT_SLEEP  = 0.5   # sec mezi voláními (buffer nad limit 200 req/min)
+
+TODAY = date.today().isoformat()
+NOW   = datetime.now(timezone.utc).isoformat()
 
 
-# ── BigQuery klient ────────────────────────────────────────────────────────────
+# ── BigQuery ───────────────────────────────────────────────────────────────────
 def get_bq_client() -> bigquery.Client:
-    if GCP_CREDENTIALS:
-        info = json.loads(GCP_CREDENTIALS)
+    if GCP_SA_JSON:
         creds = service_account.Credentials.from_service_account_info(
-            info,
+            json.loads(GCP_SA_JSON),
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
         )
         return bigquery.Client(project=GCP_PROJECT, credentials=creds)
-    # Fallback: Application Default Credentials (lokální vývoj)
-    return bigquery.Client(project=GCP_PROJECT)
+    return bigquery.Client(project=GCP_PROJECT)   # Application Default Credentials
 
 
-def table(name: str) -> str:
+def tbl(name: str) -> str:
+    """Vrátí plně kvalifikovaný název tabulky."""
     return f"`{GCP_PROJECT}.{BQ_DATASET}.{name}`"
 
 
-# ── Rankscale API helper ───────────────────────────────────────────────────────
-session = requests.Session()
-session.headers.update({
+# ── Rankscale API ──────────────────────────────────────────────────────────────
+_session = requests.Session()
+_session.headers.update({
     "Authorization": f"Bearer {RANKSCALE_API_KEY}",
     "Content-Type": "application/json",
 })
 
 
 def api_get(path: str, params: dict = None) -> dict:
-    url = f"{BASE_URL}{path}"
-    log.info(f"GET {path} {params or ''}")
-    r = session.get(url, params=params, timeout=30)
+    log.info(f"  GET {path}  params={params or {}}")
+    r = _session.get(f"{BASE_URL}{path}", params=params, timeout=30)
     r.raise_for_status()
     time.sleep(RATE_LIMIT_SLEEP)
     return r.json()
 
 
 def api_post(path: str, body: dict) -> dict:
-    url = f"{BASE_URL}{path}"
-    log.info(f"POST {path}")
-    r = session.post(url, json=body, timeout=30)
+    log.info(f"  POST {path}")
+    r = _session.post(f"{BASE_URL}{path}", json=body, timeout=60)
     r.raise_for_status()
     time.sleep(RATE_LIMIT_SLEEP)
     return r.json()
 
 
-def api_post_paginated(path: str, body: dict, limit: int = 50) -> list:
-    """Stránkuje přes offset dokud hasMore = False."""
-    all_items = []
-    offset = 0
-    while True:
-        paged_body = {**body, "limit": limit, "offset": offset}
-        data = api_post(path, paged_body)
-        items = data.get("data", {}).get("citations", [])
-        all_items.extend(items)
-        pagination = data.get("data", {}).get("pagination", {})
-        if not pagination.get("hasMore", False):
-            break
-        offset += limit
-        log.info(f"  → stránkuji, offset={offset}, celkem={len(all_items)}")
-    return all_items
-
-
-# ── Load-job helpers ───────────────────────────────────────────────────────────
-# Používáme load jobs místo streaming inserts (insert_rows_json).
-# Důvod: streaming insert plní "streaming buffer" – BQ pak neumožňuje
-# DELETE ani overwrite dokud se buffer nevyprázdní (hodiny).
-# Load jobs zapisují přímo do table storage – žádný streaming buffer.
-
-def _clean_rows(rows: list[dict]) -> list[dict]:
+# ── BQ load helpers ────────────────────────────────────────────────────────────
+def _prepare(rows: list[dict]) -> list[dict]:
     """Převede dict/list hodnoty na JSON string, přidá loaded_at."""
-    result = []
+    out = []
     for row in rows:
-        clean = {}
-        for col, val in row.items():
-            if isinstance(val, (dict, list)):
-                clean[col] = json.dumps(val, ensure_ascii=False)
-            else:
-                clean[col] = val
+        clean = {k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
+                 for k, v in row.items()}
         clean["loaded_at"] = NOW
-        result.append(clean)
-    return result
+        out.append(clean)
+    return out
 
 
-def _load_job(client: bigquery.Client, target_str: str, rows: list[dict],
-              write_disposition: str) -> None:
-    """Spustí load job – zapíše rows do target tabulky."""
-    import io
-    target_clean = target_str.replace("`", "")
-    table_ref    = bigquery.TableReference.from_string(target_clean)
-
-    job_config = bigquery.LoadJobConfig(
-        write_disposition = write_disposition,
-        source_format     = bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-        autodetect        = False,   # tabulka už existuje, schema přebíráme z ní
+def _load(client: bigquery.Client, target: str, rows: list[dict],
+          disposition: str) -> None:
+    target_ref = bigquery.TableReference.from_string(target.replace("`", ""))
+    cfg = bigquery.LoadJobConfig(
+        write_disposition=disposition,
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        autodetect=False,
     )
-
-    # Serializuj jako NDJSON
     ndjson = "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in rows)
-    data   = io.BytesIO(ndjson.encode("utf-8"))
-
-    job = client.load_table_from_file(data, table_ref, job_config=job_config)
-    job.result()   # čeká na dokončení
+    job = client.load_table_from_file(io.BytesIO(ndjson.encode()), target_ref, job_config=cfg)
+    job.result()
     if job.errors:
-        raise RuntimeError(f"Load job chyba v {target_str}: {job.errors}")
+        raise RuntimeError(f"BQ load chyba ({target}): {job.errors}")
 
 
-def load_truncate(client: bigquery.Client, target: str, rows: list[dict]) -> None:
-    """
-    WRITE_TRUNCATE – nahradí celý obsah tabulky.
-    Vhodné pro dim tabulky (dim_brands, dim_search_terms) které jsou malé
-    a každý den je nahrazujeme čerstvými daty z API.
-    """
+def bq_truncate(client: bigquery.Client, target: str, rows: list[dict]) -> None:
+    """Nahradí celý obsah tabulky. Vhodné pro dim tabulky."""
     if not rows:
-        log.warning(f"  → žádná data pro {target}, přeskakuji")
+        log.warning(f"    žádná data pro {target}, přeskakuji")
         return
-    clean = _clean_rows(rows)
-    log.info(f"  → TRUNCATE + LOAD do {target} ({len(clean)} řádků)")
-    _load_job(client, target, clean, bigquery.WriteDisposition.WRITE_TRUNCATE)
-    log.info(f"  ✓ hotov")
+    prepared = _prepare(rows)
+    log.info(f"    TRUNCATE → {target} ({len(prepared)} řádků)")
+    _load(client, target, prepared, bigquery.WriteDisposition.WRITE_TRUNCATE)
 
 
-def load_partitions(client: bigquery.Client, target: str, rows: list[dict],
-                    date_col: str) -> None:
-    """
-    Overwrite per date partition – přepíše jen dotčené dny, ostatní nechá.
-    Vhodné pro fact tabulky partitioned by date.
-    Každý jedinečný den v datech = jeden load job s partition decoratorem.
-    """
+def bq_partition_overwrite(client: bigquery.Client, target: str, rows: list[dict],
+                           date_col: str) -> None:
+    """Přepíše jen dotčené date partitions. Vhodné pro fact tabulky."""
     if not rows:
-        log.warning(f"  → žádná data pro {target}, přeskakuji")
+        log.warning(f"    žádná data pro {target}, přeskakuji")
         return
-    clean = _clean_rows(rows)
+    prepared = _prepare(rows)
 
-    # Roztřiď řádky per datum
-    from collections import defaultdict
-    by_date: dict[str, list] = defaultdict(list)
-    for row in clean:
-        day = str(row.get(date_col, TODAY))[:10].replace("-", "")  # YYYYMMDD
-        by_date[day].append(row)
+    by_day: dict[str, list] = defaultdict(list)
+    for row in prepared:
+        day = str(row.get(date_col, TODAY))[:10].replace("-", "")   # YYYYMMDD
+        by_day[day].append(row)
 
-    log.info(f"  → PARTITION OVERWRITE do {target} ({len(clean)} řádků, {len(by_date)} partitions)")
-    target_clean = target.replace("`", "")
-    for day, day_rows in by_date.items():
-        partition_target = f"`{target_clean}${day}`"
-        _load_job(client, partition_target, day_rows, bigquery.WriteDisposition.WRITE_TRUNCATE)
-
-    log.info(f"  ✓ hotov")
+    log.info(f"    PARTITION OVERWRITE → {target} ({len(prepared)} řádků, {len(by_day)} partitions)")
+    raw = target.replace("`", "")
+    for day, day_rows in by_day.items():
+        _load(client, f"`{raw}${day}`", day_rows, bigquery.WriteDisposition.WRITE_TRUNCATE)
 
 
-def load_append_dedup(client: bigquery.Client, target: str, rows: list[dict],
-                      dedup_key: str) -> None:
-    """
-    Append pouze nových řádků (dedup podle dedup_key).
-    Vhodné pro fact_answer_texts kde execution_id je unikátní navždy.
-    """
+def bq_append_dedup(client: bigquery.Client, target: str, rows: list[dict],
+                    dedup_col: str) -> None:
+    """Přidá pouze řádky jejichž dedup_col ještě není v tabulce."""
     if not rows:
-        log.warning(f"  → žádná data pro {target}, přeskakuji")
+        log.warning(f"    žádná data pro {target}, přeskakuji")
         return
 
-    existing_sql = f"SELECT `{dedup_key}` FROM {target}"
-    existing     = {str(row[dedup_key]) for row in client.query(existing_sql).result()}
-    new_rows     = [r for r in rows if str(r.get(dedup_key, "")) not in existing]
-    log.info(f"  → {len(new_rows)} nových řádků z {len(rows)} celkem")
+    existing_ids = {
+        str(r[dedup_col])
+        for r in client.query(f"SELECT `{dedup_col}` FROM {target}").result()
+    }
+    new_rows = [r for r in rows if str(r.get(dedup_col, "")) not in existing_ids]
+    log.info(f"    APPEND DEDUP → {target}: {len(new_rows)} nových z {len(rows)} celkem")
 
     if not new_rows:
-        log.info(f"  ✓ nic nového")
         return
+    prepared = _prepare(new_rows)
+    _load(client, target, prepared, bigquery.WriteDisposition.WRITE_APPEND)
 
-    clean = _clean_rows(new_rows)
-    _load_job(client, target, clean, bigquery.WriteDisposition.WRITE_APPEND)
-    log.info(f"  ✓ hotov")
+
+# ── Pomocné funkce ─────────────────────────────────────────────────────────────
+def snapshot_date_from(ts: Optional[str]) -> str:
+    """Vrátí DATE z ISO timestamp string, nebo dnešní datum."""
+    if ts:
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).date().isoformat()
+        except ValueError:
+            pass
+    return TODAY
+
+
+def iso_week(ts: Optional[str]) -> str:
+    """Vrátí ISO week string 'YYYY-WW' z timestamp."""
+    d_str = snapshot_date_from(ts)
+    d = date.fromisoformat(d_str)
+    year, week, _ = d.isocalendar()
+    return f"{year}-{week:02d}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# KROKY ETL
+# ETL KROKY
 # ══════════════════════════════════════════════════════════════════════════════
 
 def step_brands(client: bigquery.Client) -> str:
-    """GET /v1/metrics/brands → dim_brands. Vrátí brand_id."""
+    """
+    GET /v1/metrics/brands → dim_brands
+    Vrátí brand_id prvního (vlastního) brandu.
+    """
     log.info("━━ KROK 1: dim_brands")
-    data = api_get("/v1/metrics/brands", {"limit": 1000})
+    data   = api_get("/v1/metrics/brands")
     brands = data["data"]["brands"]
-    log.info(f"  → {len(brands)} brandů nalezeno")
+    log.info(f"    {len(brands)} brand(ů) nalezeno")
 
-    rows = [{
-        "brand_id":          b["id"],
-        "name":              b["name"],
-        "domain":            b.get("domain"),
-        "variants":          b.get("variants", []),
-        "search_term_count": b.get("searchTermCount"),
-        "created_at":        b.get("createdAt"),
-    } for b in brands]
+    rows = []
+    for b in brands:
+        rows.append({
+            "brand_id":          b["id"],
+            "name":              b["name"],
+            "domain":            b.get("url"),                          # reálný klíč je "url"
+            "is_own_brand":      True,                                  # brands endpoint vrací jen vlastní brandy
+            "search_term_count": len(b.get("operationalSearchTerms", [])),
+        })
 
-    load_truncate(client, table("dim_brands"), rows)
-    return brands[0]["id"]   # předpokládáme 1 brand
+    bq_truncate(client, tbl("dim_brands"), rows)
+    return brands[0]["id"]
 
 
-def step_search_terms(client: bigquery.Client, brand_id: str):
-    """GET /v1/metrics/search-terms → dim_search_terms."""
+def step_search_terms(client: bigquery.Client, brand_id: str) -> None:
+    """
+    GET /v1/metrics/search-terms → dim_search_terms
+    Pozor: reálné klíče jsou "id" (ne searchTermId) a "term" (ne query).
+    """
     log.info("━━ KROK 2: dim_search_terms")
-    data = api_get("/v1/metrics/search-terms", {"brandId": brand_id, "limit": 1000})
+    data  = api_get("/v1/metrics/search-terms", {"brandId": brand_id})
     terms = data["data"]["searchTerms"]
-    log.info(f"  → {len(terms)} search terms nalezeno")
+    log.info(f"    {len(terms)} search termů nalezeno")
 
-    # Debug: ukaž reálnou strukturu prvního záznamu
-    if terms:
-        log.info(f"  → DEBUG search term klíče: {list(terms[0].keys())}")
+    rows = []
+    for t in terms:
+        topic = t.get("searchTermTopicRef") or {}
+        rows.append({
+            "search_term_id": t["id"],                         # klíč je "id", ne "searchTermId"
+            "brand_id":       brand_id,
+            "query":          t.get("term"),                   # klíč je "term", ne "query"
+            "topic_id":       topic.get("id"),
+            "topic_name":     topic.get("name"),
+            "engine":         (t.get("aiSearchEngines") or [""])[0],
+            "region":         t.get("region"),
+            "interval":       t.get("interval"),
+            "tags":           t.get("tags", []),
+            "is_active":      t.get("status") == "active",
+        })
 
-    rows = [{
-        "search_term_id": t.get("id") or t.get("searchTermId"),
-        "brand_id":       brand_id,
-        "query":          t.get("query") or t.get("term") or t.get("searchTerm") or t.get("text"),
-        "topic":          t.get("topic"),
-        "tags":           t.get("tags", []),
-        "engines":        t.get("engines", []),
-        "interval":       t.get("interval"),
-        "region":         t.get("region"),
-        "active":         t.get("active"),
-        "created_at":     t.get("createdAt"),
-    } for t in terms]
-
-    load_truncate(client, table("dim_search_terms"), rows)
-
-
-def step_report(client: bigquery.Client, brand_id: str):
-    """POST /v1/metrics/report → fact_report_timeseries + fact_report_by_engine."""
-    log.info("━━ KROK 3: fact_report_timeseries + fact_report_by_engine")
-    data = api_post("/v1/metrics/report", {
-        "brandId":       brand_id,
-        "timeFrame":     TIME_FRAME,
-        "aggregation":   AGGREGATION,
-        "periodOffset":  0,
-        "selectedTopic": "all",
-        "selectedTags":  "all",
-        "selectedEngine": "all",
-        "selectedQuery": "all",
-    })
-
-    # timeSeries → fact_report_timeseries (partition overwrite per den)
-    ts_rows = [{
-        "date":              row["date"][:10],
-        "brand_id":          brand_id,
-        "aggregation_level": AGGREGATION,
-        "visibility":        row.get("visibility"),
-        "position":          row.get("position"),
-        "sentiment":         row.get("sentiment"),
-        "mentions":          row.get("mentions"),
-        "detection_rate":    row.get("detectionRate"),
-        "citations":         row.get("citations"),
-        "top3_pct":          row.get("top3Pct"),
-    } for row in data["data"].get("timeSeries", [])]
-    load_partitions(client, table("fact_report_timeseries"), ts_rows, date_col="date")
-
-    # byEngine → fact_report_by_engine (snapshot_date partition overwrite)
-    by_engine = data["data"].get("byEngine", {})
-    engine_rows = [{
-        "snapshot_date": TODAY,
-        "brand_id":      brand_id,
-        "engine_name":   engine,
-        "time_frame":    TIME_FRAME,
-        "visibility":    metrics.get("visibility"),
-        "position":      metrics.get("position"),
-        "mentions":      metrics.get("mentions"),
-    } for engine, metrics in by_engine.items()]
-    load_partitions(client, table("fact_report_by_engine"), engine_rows, date_col="snapshot_date")
+    bq_truncate(client, tbl("dim_search_terms"), rows)
 
 
-def step_search_term_snapshots(client: bigquery.Client, brand_id: str):
-    """POST /v1/metrics/search-terms-report → fact_search_term_snapshots."""
-    log.info("━━ KROK 4: fact_search_term_snapshots")
-    data = api_post("/v1/metrics/search-terms-report", {
+def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
+    """
+    POST /v1/metrics/search-terms-report → fact_brand_snapshots
+
+    Jeden řádek = brand × search term × týdenní snapshot.
+    Vlastní brand (ownBrand) + každý detekovaný competitor.
+    snapshot_date = DATE(lastSnapshotAt) → partition overwrite zachová historii.
+    """
+    log.info("━━ KROK 3: fact_brand_snapshots")
+    data  = api_post("/v1/metrics/search-terms-report", {
         "brandId":            brand_id,
         "timeFrame":          TIME_FRAME,
         "periodOffset":       0,
@@ -315,38 +256,59 @@ def step_search_term_snapshots(client: bigquery.Client, brand_id: str):
         "selectedQuery":      "all",
         "includeAnswerTexts": False,
     })
+    terms = data["data"].get("searchTerms", [])
+    log.info(f"    {len(terms)} search termů v response")
 
     rows = []
-    for t in data["data"].get("searchTerms", []):
-        lr    = t.get("latestRun") or {}
-        trend = t.get("trend") or {}
-        rows.append({
-            "snapshot_date":           TODAY,
-            "search_term_id":          t["searchTermId"],
-            "brand_id":                brand_id,
-            "query":                   t.get("query"),
-            "topic":                   t.get("topic"),
-            "tags":                    t.get("tags", []),
-            "latest_run_date":         lr.get("date"),
-            "visibility":              lr.get("visibility"),
-            "position":                lr.get("position"),
-            "sentiment":               lr.get("sentiment"),
-            "mentions":                lr.get("mentions"),
-            "citations":               lr.get("citations"),
-            "engines_detail":          lr.get("engines", {}),
-            "trend_visibility_change": (trend.get("visibility") or {}).get("change"),
-            "trend_visibility_dir":    (trend.get("visibility") or {}).get("direction"),
-            "trend_position_change":   (trend.get("position") or {}).get("change"),
-            "trend_position_dir":      (trend.get("position") or {}).get("direction"),
-        })
+    for t in terms:
+        last_snap = t.get("lastSnapshotAt")
+        snap_date = snapshot_date_from(last_snap)
+        snap_week = iso_week(last_snap)
+        topic     = t.get("topic") or {}
+        engine    = (t.get("aiSearchEngines") or [""])[0]
+        query     = t.get("query", "")
 
-    load_partitions(client, table("fact_search_term_snapshots"), rows, date_col="snapshot_date")
+        def make_row(brand_data: dict, is_own: bool) -> dict:
+            return {
+                "snapshot_date":   snap_date,
+                "snapshot_week":   snap_week,
+                "search_term_id":  t["searchTermId"],
+                "brand_name":      brand_data.get("name"),
+                "is_own_brand":    is_own,
+                "brand_id":        brand_id if is_own else None,
+                # metriky
+                "visibility_score": brand_data.get("visibilityScore"),
+                "avg_sentiment":    brand_data.get("avgSentiment"),
+                "avg_rank":         brand_data.get("avgRank"),
+                "latest_rank":      brand_data.get("latestRank"),
+                "detection_rate":   brand_data.get("detectionRate"),
+                "top3_rate":        brand_data.get("top3"),
+                "citation_count":   brand_data.get("citationCount"),
+                "appearances":      brand_data.get("appearances"),
+                # denorm
+                "query":            query,
+                "topic_name":       topic.get("name"),
+                "engine":           engine,
+                "last_snapshot_at": last_snap,
+            }
+
+        if "ownBrand" in t:
+            rows.append(make_row(t["ownBrand"], is_own=True))
+
+        for comp in t.get("competitors", []):
+            rows.append(make_row(comp, is_own=False))
+
+    log.info(f"    {len(rows)} řádků celkem (vlastní brand + competitors)")
+    bq_partition_overwrite(client, tbl("fact_brand_snapshots"), rows, date_col="snapshot_date")
 
 
-def step_answer_texts(client: bigquery.Client, brand_id: str):
-    """POST /v1/metrics/search-terms-report s includeAnswerTexts=true → fact_answer_texts."""
-    log.info("━━ KROK 5: fact_answer_texts")
-    data = api_post("/v1/metrics/search-terms-report", {
+def step_answer_texts(client: bigquery.Client, brand_id: str) -> None:
+    """
+    POST /v1/metrics/search-terms-report (includeAnswerTexts: true) → fact_answer_texts
+    Append + dedup podle execution_id (exekuce jsou unikátní navždy).
+    """
+    log.info("━━ KROK 4: fact_answer_texts")
+    data  = api_post("/v1/metrics/search-terms-report", {
         "brandId":            brand_id,
         "timeFrame":          TIME_FRAME,
         "periodOffset":       0,
@@ -356,110 +318,46 @@ def step_answer_texts(client: bigquery.Client, brand_id: str):
         "selectedQuery":      "all",
         "includeAnswerTexts": True,
     })
+    terms = data["data"].get("searchTerms", [])
 
     rows = []
-    for t in data["data"].get("searchTerms", []):
+    for t in terms:
+        topic = t.get("topic") or {}
         for at in t.get("answerTexts") or []:
             rows.append({
                 "execution_id":   at["executionId"],
                 "search_term_id": t["searchTermId"],
-                "brand_id":       brand_id,
-                "query":          t.get("query"),
                 "executed_at":    at.get("executedAt"),
-                "engine_name":    at.get("engine"),
+                "engine":         at.get("engine"),
+                "query":          t.get("query"),
+                "topic_name":     topic.get("name"),
                 "answer_text":    at.get("answerText"),
             })
 
-    log.info(f"  → {len(rows)} answer texts k načtení")
-    load_append_dedup(client, table("fact_answer_texts"), rows, dedup_key="execution_id")
-
-
-def step_sentiment(client: bigquery.Client, brand_id: str):
-    """POST /v1/metrics/sentiment → fact_sentiment_timeseries + fact_sentiment_by_engine."""
-    log.info("━━ KROK 6: fact_sentiment_timeseries + fact_sentiment_by_engine")
-    data = api_post("/v1/metrics/sentiment", {
-        "brandId":        brand_id,
-        "timeFrame":      TIME_FRAME,
-        "periodOffset":   0,
-        "selectedTopic":  "all",
-        "selectedEngine": "all",
-        "selectedQuery":  "all",
-    })
-
-    ts_rows = [{
-        "date":            row["date"][:10],
-        "brand_id":        brand_id,
-        "sentiment_score": row.get("score"),
-        "positive_pct":    row.get("positive"),
-        "neutral_pct":     row.get("neutral"),
-        "negative_pct":    row.get("negative"),
-    } for row in data["data"].get("timeSeries", [])]
-    load_partitions(client, table("fact_sentiment_timeseries"), ts_rows, date_col="date")
-
-    by_engine = data["data"].get("byEngine", {})
-    engine_rows = [{
-        "snapshot_date":   TODAY,
-        "brand_id":        brand_id,
-        "engine_name":     engine,
-        "sentiment_score": metrics.get("score"),
-        "sentiment_label": metrics.get("label"),
-    } for engine, metrics in by_engine.items()]
-    load_partitions(client, table("fact_sentiment_by_engine"), engine_rows, date_col="snapshot_date")
-
-
-def step_citations(client: bigquery.Client, brand_id: str):
-    """POST /v1/metrics/citations → fact_citations (se stránkováním)."""
-    log.info("━━ KROK 7: fact_citations")
-    citations = api_post_paginated("/v1/metrics/citations", {
-        "brandId":        brand_id,
-        "timeFrame":      TIME_FRAME,
-        "periodOffset":   0,
-        "selectedTopic":  "all",
-        "selectedEngine": "all",
-        "selectedQuery":  "all",
-    })
-    log.info(f"  → {len(citations)} citací celkem")
-
-    rows = [{
-        "search_term_id": c["searchTermId"],
-        "brand_id":       brand_id,
-        "engine_name":    c.get("engine"),
-        "url":            c.get("url"),
-        "title":          c.get("title"),
-        "domain":         c.get("domain"),
-        "query":          c.get("query"),
-        "first_seen":     c.get("firstSeen"),
-        "last_seen":      c.get("lastSeen"),
-        "citation_count": c.get("count"),
-    } for c in citations]
-
-    # Citations: overwrite last_seen partition (API aktualizuje count průběžně)
-    load_partitions(client, table("fact_citations"), rows, date_col="last_seen")
+    log.info(f"    {len(rows)} answer textů k zpracování")
+    bq_append_dedup(client, tbl("fact_answer_texts"), rows, dedup_col="execution_id")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
-def main():
+def main() -> None:
     log.info("╔══════════════════════════════════════════════╗")
-    log.info("║  Rankscale ETL start  –  " + TODAY + "       ║")
+    log.info(f"║  Rankscale ETL  –  {TODAY}  TIME_FRAME={TIME_FRAME}  ║")
     log.info("╚══════════════════════════════════════════════╝")
 
     client = get_bq_client()
 
     brand_id = step_brands(client)
-    log.info(f"  → brand_id: {brand_id}")
+    log.info(f"    brand_id = {brand_id}")
 
     step_search_terms(client, brand_id)
-    step_report(client, brand_id)
-    step_search_term_snapshots(client, brand_id)
+    step_brand_snapshots(client, brand_id)
     step_answer_texts(client, brand_id)
-    step_sentiment(client, brand_id)
-    step_citations(client, brand_id)
 
     log.info("╔══════════════════════════════════════════════╗")
-    log.info("║  ETL dokončen úspěšně  ✓                     ║")
+    log.info("║  ETL dokončen  ✓                             ║")
     log.info("╚══════════════════════════════════════════════╝")
 
 
