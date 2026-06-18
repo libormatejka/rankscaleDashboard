@@ -289,7 +289,7 @@ def has_new_snapshots(client: bigquery.Client, terms: list[dict]) -> bool:
 
     fresh = api_latest > bq_latest
     if not fresh:
-        log.info(f"    Žádná nová data (BQ={bq_latest.date()}, API={api_latest.date()}) – přeskakuji kroky 3+4")
+        log.info(f"    Žádná nová data (BQ={bq_latest.date()}, API={api_latest.date()}) – přeskakuji kroky 3+4+5")
     else:
         log.info(f"    Nová data detekována ({api_latest.date()}), spouštím stahování")
     return fresh
@@ -300,7 +300,7 @@ def step_brands(client: bigquery.Client) -> list[str]:
     GET /v1/metrics/brands → dim_brands
     Vrátí seznam brand_id všech brandů ve workspace.
     """
-    log.info("━━ KROK 1: dim_brands")
+    log.info("━━ KROK 1: brands")
     data   = api_get("/v1/metrics/brands")
     brands = data["data"]["brands"]
     log.info(f"    {len(brands)} brand(ů) nalezeno")
@@ -325,7 +325,7 @@ def step_search_terms(client: bigquery.Client, brand_ids: list[str]) -> list[dic
     Projde všechny brandy, vrátí sloučený seznam termů pro freshness check.
     Pozor: reálné klíče jsou "id" (ne searchTermId) a "term" (ne query).
     """
-    log.info("━━ KROK 2: dim_search_terms")
+    log.info("━━ KROK 2: search_terms")
     all_rows  = []
     all_terms = []
 
@@ -363,7 +363,7 @@ def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
     Vlastní brand (ownBrand) + každý detekovaný competitor.
     snapshot_date = DATE(lastSnapshotAt) → partition overwrite zachová historii.
     """
-    log.info("━━ KROK 3: fact_brand_snapshots")
+    log.info("━━ KROK 3: brand_snapshots")
     ensure_fact_table(
         client, tbl("brand_snapshots"),
         schema=FACT_BRAND_SNAPSHOTS_SCHEMA,
@@ -431,7 +431,7 @@ def step_answer_texts(client: bigquery.Client, brand_id: str) -> None:
     POST /v1/metrics/search-terms-report (includeAnswerTexts: true) → fact_answer_texts
     Append + dedup podle execution_id (exekuce jsou unikátní navždy).
     """
-    log.info("━━ KROK 4: fact_answer_texts")
+    log.info("━━ KROK 4: answer_texts")
     ensure_fact_table(
         client, tbl("answer_texts"),
         schema=FACT_ANSWER_TEXTS_SCHEMA,

@@ -5,15 +5,29 @@ Běží automaticky každý den v 6:00 UTC přes GitHub Actions.
 
 ## Co načítá
 
-| Krok | Endpoint | BQ tabulky |
+| Krok | Endpoint | BQ tabulka |
 |------|----------|------------|
-| 1 | GET /v1/metrics/brands | dim_brands |
-| 2 | GET /v1/metrics/search-terms | dim_search_terms |
-| 3 | POST /v1/metrics/report | fact_report_timeseries, fact_report_by_engine |
-| 4 | POST /v1/metrics/search-terms-report | fact_search_term_snapshots |
-| 5 | POST /v1/metrics/search-terms-report (answer texts) | fact_answer_texts |
-| 6 | POST /v1/metrics/sentiment | fact_sentiment_timeseries, fact_sentiment_by_engine |
-| 7 | POST /v1/metrics/citations | fact_citations |
+| 1 | GET /v1/metrics/brands | `brands` |
+| 2 | GET /v1/metrics/search-terms | `search_terms` |
+| 3 | POST /v1/metrics/search-terms-report | `brand_snapshots` |
+| 4 | POST /v1/metrics/search-terms-report (answer texts) | `answer_texts` |
+| 5 | POST /v1/metrics/citations | `citations` |
+
+Kroky 3–5 se spustí jen pokud Rankscale má novější data než BigQuery (freshness check).
+
+## BigQuery tabulky
+
+**Dataset:** `libor-matejkacz.RankScaleDashboard`
+
+| Tabulka | Popis | Strategie zápisu |
+|---------|-------|-----------------|
+| `brands` | Číselník vlastních brandů | TRUNCATE |
+| `search_terms` | Číselník dotazů (query × engine) | TRUNCATE |
+| `brand_snapshots` | Metriky per brand per search term per týden — **hlavní tabulka** | Partition overwrite |
+| `answer_texts` | Raw texty AI odpovědí | Append + dedup |
+| `citations` | Citované domény a URL per query a engine | Partition overwrite |
+
+Detailní popis tabulek a příklady SQL: `docs/bigquery-data-model.md`
 
 ## Nastavení
 
@@ -26,7 +40,7 @@ a přidej tyto 4 secrets:
 |--------|---------|
 | `RANKSCALE_API_KEY` | Tvůj Rankscale API klíč (začíná `rk_`) |
 | `GCP_PROJECT` | ID GCP projektu, např. `libor-matejkacz` |
-| `BQ_DATASET` | Název datasetu, např. `RankscaleMetrics` |
+| `BQ_DATASET` | Název datasetu, např. `RankScaleDashboard` |
 | `GCP_SA_JSON` | JSON obsah service account klíče (viz níže) |
 
 ### 2. GCP Service Account
@@ -55,7 +69,7 @@ pip install -r requirements.txt
 # Nastav proměnné prostředí
 export RANKSCALE_API_KEY=rk_tvuj_klic
 export GCP_PROJECT=libor-matejkacz
-export BQ_DATASET=RankscaleMetrics
+export BQ_DATASET=RankScaleDashboard
 # GCP_SA_JSON není potřeba lokálně pokud máš Application Default Credentials:
 gcloud auth application-default login
 
@@ -66,6 +80,6 @@ python src/rankscale_etl.py
 ## Časové okno dat
 
 Skript tahá vždy posledních `7d` dat (konstanta `TIME_FRAME` v ETL skriptu).
-Překryv je záměrný – MERGE logika zajistí že duplikáty nevzniknou.
+Partition overwrite a dedup zajistí že duplikáty nevzniknou.
 Pokud chceš načíst historická data zpětně, změň `TIME_FRAME` na `30d` nebo `3m`
 a spusť ručně.

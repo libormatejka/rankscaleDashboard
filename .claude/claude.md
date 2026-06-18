@@ -16,14 +16,15 @@ Spouští se automaticky každý den v 6:00 UTC přes GitHub Actions.
 
 ---
 
-## 4 tabulky v BigQuery
+## 5 tabulek v BigQuery
 
 | Tabulka | Zdroj | Strategie |
 |---|---|---|
-| `dim_brands` | `GET /v1/metrics/brands` | TRUNCATE |
-| `dim_search_terms` | `GET /v1/metrics/search-terms` | TRUNCATE |
-| `fact_brand_snapshots` | `POST /v1/metrics/search-terms-report` | PARTITION OVERWRITE |
-| `fact_answer_texts` | `POST /v1/metrics/search-terms-report` (includeAnswerTexts: true) | APPEND + dedup |
+| `brands` | `GET /v1/metrics/brands` | TRUNCATE |
+| `search_terms` | `GET /v1/metrics/search-terms` | TRUNCATE |
+| `brand_snapshots` | `POST /v1/metrics/search-terms-report` | PARTITION OVERWRITE |
+| `answer_texts` | `POST /v1/metrics/search-terms-report` (includeAnswerTexts: true) | APPEND + dedup |
+| `citations` | `POST /v1/metrics/citations` | PARTITION OVERWRITE |
 
 Detailní popis tabulek: `docs/bigquery-data-model.md`
 
