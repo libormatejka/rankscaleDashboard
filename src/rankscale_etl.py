@@ -282,10 +282,10 @@ def has_new_snapshots(client: bigquery.Client, terms: list[dict]) -> bool:
     return fresh
 
 
-def step_brands(client: bigquery.Client) -> str:
+def step_brands(client: bigquery.Client) -> list[str]:
     """
     GET /v1/metrics/brands → dim_brands
-    Vrátí brand_id prvního (vlastního) brandu.
+    Vrátí seznam brand_id všech brandů ve workspace.
     """
     log.info("━━ KROK 1: dim_brands")
     data   = api_get("/v1/metrics/brands")
@@ -303,38 +303,43 @@ def step_brands(client: bigquery.Client) -> str:
         })
 
     bq_truncate(client, tbl("dim_brands"), rows)
-    return brands[0]["id"]
+    return [b["id"] for b in brands]
 
 
-def step_search_terms(client: bigquery.Client, brand_id: str) -> list[dict]:
+def step_search_terms(client: bigquery.Client, brand_ids: list[str]) -> list[dict]:
     """
     GET /v1/metrics/search-terms → dim_search_terms
-    Vrátí seznam termů – použijeme ho i pro freshness check (bez extra API callu).
+    Projde všechny brandy, vrátí sloučený seznam termů pro freshness check.
     Pozor: reálné klíče jsou "id" (ne searchTermId) a "term" (ne query).
     """
     log.info("━━ KROK 2: dim_search_terms")
-    data  = api_get("/v1/metrics/search-terms", {"brandId": brand_id})
-    terms = data["data"]["searchTerms"]
-    log.info(f"    {len(terms)} search termů nalezeno")
+    all_rows  = []
+    all_terms = []
 
-    rows = []
-    for t in terms:
-        topic = t.get("searchTermTopicRef") or {}
-        rows.append({
-            "search_term_id": t["id"],
-            "brand_id":       brand_id,
-            "query":          t.get("term"),
-            "topic_id":       topic.get("id"),
-            "topic_name":     topic.get("name"),
-            "engine":         (t.get("aiSearchEngines") or [""])[0],
-            "region":         t.get("region"),
-            "interval":       t.get("interval"),
-            "tags":           t.get("tags", []),
-            "is_active":      t.get("status") == "active",
-        })
+    for brand_id in brand_ids:
+        data  = api_get("/v1/metrics/search-terms", {"brandId": brand_id})
+        terms = data["data"]["searchTerms"]
+        log.info(f"    brand {brand_id}: {len(terms)} search termů")
 
-    bq_truncate(client, tbl("dim_search_terms"), rows)
-    return terms   # ← vrátíme raw terms pro freshness check
+        for t in terms:
+            topic = t.get("searchTermTopicRef") or {}
+            all_rows.append({
+                "search_term_id": t["id"],
+                "brand_id":       brand_id,
+                "query":          t.get("term"),
+                "topic_id":       topic.get("id"),
+                "topic_name":     topic.get("name"),
+                "engine":         (t.get("aiSearchEngines") or [""])[0],
+                "region":         t.get("region"),
+                "interval":       t.get("interval"),
+                "tags":           t.get("tags", []),
+                "is_active":      t.get("status") == "active",
+            })
+        all_terms.extend(terms)
+
+    log.info(f"    celkem {len(all_rows)} search termů")
+    bq_truncate(client, tbl("dim_search_terms"), all_rows)
+    return all_terms
 
 
 def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
@@ -461,14 +466,16 @@ def main() -> None:
 
     client = get_bq_client()
 
-    brand_id = step_brands(client)
-    log.info(f"    brand_id = {brand_id}")
+    brand_ids = step_brands(client)
+    log.info(f"    brand_ids = {brand_ids}")
 
-    terms = step_search_terms(client, brand_id)
+    terms = step_search_terms(client, brand_ids)
 
     if has_new_snapshots(client, terms):
-        step_brand_snapshots(client, brand_id)
-        step_answer_texts(client, brand_id)
+        for brand_id in brand_ids:
+            log.info(f"━━ Zpracovávám brand {brand_id}")
+            step_brand_snapshots(client, brand_id)
+            step_answer_texts(client, brand_id)
     else:
         log.info("    Žádná nová data – kroky 3 a 4 přeskočeny")
 
