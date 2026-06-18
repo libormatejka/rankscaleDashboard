@@ -23,7 +23,7 @@ Při změně nástroje se změní ETL a BQ schema, Snowflake reporting schema z�
 
 ## Tabulky
 
-### 1. `dim_brands` — číselník brandů
+### 1. `brands` — číselník brandů
 
 **Zdroj:** `GET /v1/metrics/brands`  
 **Load strategie:** WRITE_TRUNCATE (celá tabulka se přepíše při každém runu)  
@@ -39,11 +39,11 @@ Při změně nástroje se změní ETL a BQ schema, Snowflake reporting schema z�
 | `loaded_at` | TIMESTAMP | Čas ETL runu |
 
 > Competitors **nejsou** v této tabulce — Rankscale je nevrací jako samostatné brandy.
-> Jejich `brand_name` je dostupný přímo v `fact_brand_snapshots`.
+> Jejich `brand_name` je dostupný přímo v `brand_snapshots`.
 
 ---
 
-### 2. `dim_search_terms` — číselník dotazů
+### 2. `search_terms` — číselník dotazů
 
 **Zdroj:** `GET /v1/metrics/search-terms`  
 **Load strategie:** WRITE_TRUNCATE (celá tabulka se přepíše při každém runu)  
@@ -52,7 +52,7 @@ Při změně nástroje se změní ETL a BQ schema, Snowflake reporting schema z�
 | Sloupec | Typ | Popis |
 |---|---|---|
 | `search_term_id` | STRING | Rankscale ID (unikátní per dotaz × engine) |
-| `brand_id` | STRING | FK → dim_brands |
+| `brand_id` | STRING | FK → brands |
 | `query` | STRING | Text dotazu posílaného AI enginu (pole `term` v API) |
 | `topic_id` | STRING | Rankscale topic ID |
 | `topic_name` | STRING | `Brand` / `Půjčky/Úvěry` / `Investice` |
@@ -65,7 +65,7 @@ Při změně nástroje se změní ETL a BQ schema, Snowflake reporting schema z�
 
 ---
 
-### 3. `fact_brand_snapshots` — metriky ← HLAVNÍ TABULKA
+### 3. `brand_snapshots` — metriky ← HLAVNÍ TABULKA
 
 **Zdroj:** `POST /v1/metrics/search-terms-report` (includeAnswerTexts: false)  
 **Load strategie:** PARTITION OVERWRITE per `snapshot_date` (přepíše jen dotčený týden)  
@@ -79,10 +79,10 @@ Jeden řádek = **brand × search term × týdenní snapshot**.
 |---|---|---|
 | `snapshot_date` | DATE | Datum snapshotu (= partition key) |
 | `snapshot_week` | STRING | ISO týden, např. `2026-21` |
-| `search_term_id` | STRING | FK → dim_search_terms |
+| `search_term_id` | STRING | FK → search_terms |
 | `brand_name` | STRING | Název brandu (vlastní i competitor) |
 | `is_own_brand` | BOOL | TRUE = vlastní brand, FALSE = competitor |
-| `brand_id` | STRING | FK → dim_brands (NULL pro nesledované competitors) |
+| `brand_id` | STRING | FK → brands (NULL pro nesledované competitors) |
 | `visibility_score` | FLOAT64 | 0–100; prominentnost zmínky v AI odpovědích |
 | `avg_sentiment` | FLOAT64 | 0–100; 50 = neutrální, >50 pozitivní |
 | `avg_rank` | FLOAT64 | Průměrná pozice v AI odpovědi (1 = nejlepší); NULL = nedetekován |
@@ -98,11 +98,11 @@ Jeden řádek = **brand × search term × týdenní snapshot**.
 | `loaded_at` | TIMESTAMP | Čas ETL runu |
 
 **Důležité:** Metriky jsou **předagregované Rankscale** za dané `timeFrame` (defaultně 7d).
-Nejedná se o raw data jednotlivých execucí — to jsou `fact_answer_texts`.
+Nejedná se o raw data jednotlivých execucí — to jsou `answer_texts`.
 
 ---
 
-### 4. `fact_answer_texts` — raw AI odpovědi
+### 4. `answer_texts` — raw AI odpovědi
 
 **Zdroj:** `POST /v1/metrics/search-terms-report` (includeAnswerTexts: true)  
 **Load strategie:** APPEND + dedup podle `execution_id` (každá exekuce se uloží jen jednou)  
@@ -115,7 +115,7 @@ Jeden řádek = **jedna AI odpověď na jeden dotaz** (raw text).
 | Sloupec | Typ | Popis |
 |---|---|---|
 | `execution_id` | STRING | Unikátní ID exekuce (dedup key) |
-| `search_term_id` | STRING | FK → dim_search_terms |
+| `search_term_id` | STRING | FK → search_terms |
 | `executed_at` | TIMESTAMP | Kdy AI engine odpověděl |
 | `engine` | STRING | AI engine |
 | `query` | STRING | Text dotazu |
@@ -124,7 +124,7 @@ Jeden řádek = **jedna AI odpověď na jeden dotaz** (raw text).
 | `loaded_at` | TIMESTAMP | Čas ETL runu |
 
 **K čemu slouží:** Audit obsahu AI odpovědí, NLP analýzy, vlastní výpočet metrik.
-Pro standardní dashboard reporting používej `fact_brand_snapshots`.
+Pro standardní dashboard reporting používej `brand_snapshots`.
 
 ---
 
@@ -132,12 +132,12 @@ Pro standardní dashboard reporting používej `fact_brand_snapshots`.
 
 | Potřebuji | Tabulka |
 |---|---|
-| Visibility score, rank, sentiment mého brandu | `fact_brand_snapshots` WHERE is_own_brand = TRUE |
-| Srovnání s konkurencí | `fact_brand_snapshots` (všechny řádky) |
-| Trend v čase (po týdnech) | `fact_brand_snapshots` GROUP BY snapshot_week |
-| Jaké dotazy sledujeme a na jakých enginech | `dim_search_terms` |
-| Co přesně AI o nás napsal | `fact_answer_texts` |
-| Kolik search termů máme aktivních | `dim_search_terms` WHERE is_active = TRUE |
+| Visibility score, rank, sentiment mého brandu | `brand_snapshots` WHERE is_own_brand = TRUE |
+| Srovnání s konkurencí | `brand_snapshots` (všechny řádky) |
+| Trend v čase (po týdnech) | `brand_snapshots` GROUP BY snapshot_week |
+| Jaké dotazy sledujeme a na jakých enginech | `search_terms` |
+| Co přesně AI o nás napsal | `answer_texts` |
+| Kolik search termů máme aktivních | `search_terms` WHERE is_active = TRUE |
 
 ---
 
@@ -151,7 +151,7 @@ SELECT
   AVG(visibility_score) AS avg_visibility,
   AVG(avg_rank)         AS avg_rank,
   AVG(detection_rate)   AS avg_detection
-FROM `libor-matejkacz.RankScaleDashboard.fact_brand_snapshots`
+FROM `libor-matejkacz.RankScaleDashboard.brand_snapshots`
 WHERE is_own_brand = TRUE
 GROUP BY snapshot_week, engine
 ORDER BY snapshot_week;
@@ -161,7 +161,7 @@ SELECT
   brand_name,
   AVG(visibility_score) AS avg_visibility,
   AVG(detection_rate)   AS avg_detection
-FROM `libor-matejkacz.RankScaleDashboard.fact_brand_snapshots`
+FROM `libor-matejkacz.RankScaleDashboard.brand_snapshots`
 WHERE is_own_brand = FALSE
   AND snapshot_week = FORMAT_DATE('%G-%V', CURRENT_DATE())
 GROUP BY brand_name
@@ -172,5 +172,5 @@ LIMIT 10;
 SELECT
   MAX(last_snapshot_at) AS last_snapshot,
   MAX(loaded_at)        AS last_etl_run
-FROM `libor-matejkacz.RankScaleDashboard.fact_brand_snapshots`;
+FROM `libor-matejkacz.RankScaleDashboard.brand_snapshots`;
 ```

@@ -1,22 +1,22 @@
 -- ============================================================
--- Rankscale → BigQuery schema (POC)
+-- Rankscale → BigQuery schema
 -- Projekt:  libor-matejkacz
 -- Dataset:  RankScaleDashboard
 -- ============================================================
 -- Spusť celý soubor v BigQuery Console (Query editor).
 --
--- dim_* tabulky: CREATE OR REPLACE (bezpečné, ETL je vždy přepíše)
--- fact_* tabulky: DROP + CREATE (spusť jen při inicializaci nebo
+-- brands, search_terms: CREATE OR REPLACE (bezpečné, ETL je vždy přepíše)
+-- brand_snapshots, answer_texts: DROP + CREATE (spusť jen při inicializaci nebo
 --   pokud chceš smazat všechna data)
 -- ============================================================
 
 
 -- ------------------------------------------------------------
--- 1. dim_brands
+-- 1. brands
 -- Zdroj: GET /v1/metrics/brands
 -- Strategie: WRITE_TRUNCATE (malá tabulka, každý den se přepíše)
 -- ------------------------------------------------------------
-CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.dim_brands` (
+CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.brands` (
   brand_id          STRING    NOT NULL,   -- Rankscale brand ID
   name              STRING    NOT NULL,   -- název brandu
   domain            STRING,               -- doména (pokud dostupná)
@@ -27,13 +27,13 @@ CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.dim_brands` (
 
 
 -- ------------------------------------------------------------
--- 2. dim_search_terms
+-- 2. search_terms
 -- Zdroj: GET /v1/metrics/search-terms
 -- Strategie: WRITE_TRUNCATE (malá tabulka, každý den se přepíše)
 -- ------------------------------------------------------------
-CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.dim_search_terms` (
+CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.search_terms` (
   search_term_id  STRING    NOT NULL,   -- Rankscale searchTermId (query × engine)
-  brand_id        STRING    NOT NULL,   -- FK → dim_brands.brand_id
+  brand_id        STRING    NOT NULL,   -- FK → brands.brand_id
   query           STRING    NOT NULL,   -- text promptu posílaného AI enginu
   topic_id        STRING,               -- Rankscale topic ID
   topic_name      STRING,               -- "Brand" | "Půjčky/Úvěry" | "Investice"
@@ -47,7 +47,7 @@ CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.dim_search_terms` (
 
 
 -- ------------------------------------------------------------
--- 3. fact_brand_snapshots          ← HLAVNÍ TABULKA
+-- 3. brand_snapshots          ← HLAVNÍ TABULKA
 -- Zdroj: POST /v1/metrics/search-terms-report
 -- Strategie: PARTITION OVERWRITE per snapshot_date
 --
@@ -55,16 +55,16 @@ CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.dim_search_terms` (
 -- Obsahuje vlastní brand (is_own_brand = TRUE) i konkurenty.
 -- Kumuluje se každý týden → základ pro time-series reporting.
 -- ------------------------------------------------------------
-DROP TABLE IF EXISTS `libor-matejkacz.RankScaleDashboard.fact_brand_snapshots`;
-CREATE TABLE `libor-matejkacz.RankScaleDashboard.fact_brand_snapshots`
+DROP TABLE IF EXISTS `libor-matejkacz.RankScaleDashboard.brand_snapshots`;
+CREATE TABLE `libor-matejkacz.RankScaleDashboard.brand_snapshots`
 (
   -- Identifikace
   snapshot_date    DATE      NOT NULL,  -- datum ETL runu (PARTITION key)
   snapshot_week    STRING    NOT NULL,  -- ISO week, např. "2026-21"
-  search_term_id   STRING    NOT NULL,  -- FK → dim_search_terms.search_term_id
+  search_term_id   STRING    NOT NULL,  -- FK → search_terms.search_term_id
   brand_name       STRING    NOT NULL,  -- název brandu (může být neznámý competitor)
   is_own_brand     BOOL      NOT NULL,  -- true = vlastní brand
-  brand_id         STRING,              -- FK → dim_brands (NULL pro nesledované competitory)
+  brand_id         STRING,              -- FK → brands (NULL pro nesledované competitory)
 
   -- Rankscale metriky (v původní škále bez rescalování)
   visibility_score  FLOAT64,   -- 0–100; jak prominentně AI brand zmiňuje
@@ -89,18 +89,18 @@ CLUSTER BY is_own_brand, topic_name, engine;
 
 
 -- ------------------------------------------------------------
--- 4. fact_answer_texts
+-- 4. answer_texts
 -- Zdroj: POST /v1/metrics/search-terms-report (includeAnswerTexts: true)
 -- Strategie: APPEND + dedup podle execution_id
 --
 -- Raw texty AI odpovědí. Ukládají se jednou (execution_id je unikátní).
 -- Velká tabulka — spouštět méně často (týdně stačí).
 -- ------------------------------------------------------------
-DROP TABLE IF EXISTS `libor-matejkacz.RankScaleDashboard.fact_answer_texts`;
-CREATE TABLE `libor-matejkacz.RankScaleDashboard.fact_answer_texts`
+DROP TABLE IF EXISTS `libor-matejkacz.RankScaleDashboard.answer_texts`;
+CREATE TABLE `libor-matejkacz.RankScaleDashboard.answer_texts`
 (
   execution_id    STRING    NOT NULL,   -- Rankscale executionId (unikátní navždy)
-  search_term_id  STRING    NOT NULL,   -- FK → dim_search_terms
+  search_term_id  STRING    NOT NULL,   -- FK → search_terms
   executed_at     TIMESTAMP NOT NULL,   -- kdy AI engine odpověděl (PARTITION key)
   engine          STRING,               -- "google_ai_mode_gui" | ...
   query           STRING,               -- text promptu

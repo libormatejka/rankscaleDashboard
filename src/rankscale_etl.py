@@ -261,7 +261,7 @@ def has_new_snapshots(client: bigquery.Client, terms: list[dict]) -> bool:
     # Nejnovější snapshot v BQ (prázdná tabulka = None)
     try:
         result = list(client.query(
-            f"SELECT MAX(last_snapshot_at) AS latest FROM {tbl('fact_brand_snapshots')}"
+            f"SELECT MAX(last_snapshot_at) AS latest FROM {tbl('brand_snapshots')}"
         ).result())
         bq_latest = result[0]["latest"] if result else None
     except Exception:
@@ -302,7 +302,7 @@ def step_brands(client: bigquery.Client) -> list[str]:
             "search_term_count": len(b.get("operationalSearchTerms", [])),
         })
 
-    bq_truncate(client, tbl("dim_brands"), rows)
+    bq_truncate(client, tbl("brands"), rows)
     return [b["id"] for b in brands]
 
 
@@ -338,7 +338,7 @@ def step_search_terms(client: bigquery.Client, brand_ids: list[str]) -> list[dic
         all_terms.extend(terms)
 
     log.info(f"    celkem {len(all_rows)} search termů")
-    bq_truncate(client, tbl("dim_search_terms"), all_rows)
+    bq_truncate(client, tbl("search_terms"), all_rows)
     return all_terms
 
 
@@ -352,7 +352,7 @@ def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
     """
     log.info("━━ KROK 3: fact_brand_snapshots")
     ensure_fact_table(
-        client, tbl("fact_brand_snapshots"),
+        client, tbl("brand_snapshots"),
         schema=FACT_BRAND_SNAPSHOTS_SCHEMA,
         partition_field="snapshot_date",
         cluster_fields=["is_own_brand", "topic_name", "engine"],
@@ -410,7 +410,7 @@ def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
             rows.append(make_row(comp, is_own=False))
 
     log.info(f"    {len(rows)} řádků celkem (vlastní brand + competitors)")
-    bq_partition_overwrite(client, tbl("fact_brand_snapshots"), rows, date_col="snapshot_date")
+    bq_partition_overwrite(client, tbl("brand_snapshots"), rows, date_col="snapshot_date")
 
 
 def step_answer_texts(client: bigquery.Client, brand_id: str) -> None:
@@ -420,7 +420,7 @@ def step_answer_texts(client: bigquery.Client, brand_id: str) -> None:
     """
     log.info("━━ KROK 4: fact_answer_texts")
     ensure_fact_table(
-        client, tbl("fact_answer_texts"),
+        client, tbl("answer_texts"),
         schema=FACT_ANSWER_TEXTS_SCHEMA,
         partition_field="executed_at",
         cluster_fields=["engine"],
@@ -452,7 +452,7 @@ def step_answer_texts(client: bigquery.Client, brand_id: str) -> None:
             })
 
     log.info(f"    {len(rows)} answer textů k zpracování")
-    bq_append_dedup(client, tbl("fact_answer_texts"), rows, dedup_col="execution_id")
+    bq_append_dedup(client, tbl("answer_texts"), rows, dedup_col="execution_id")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
