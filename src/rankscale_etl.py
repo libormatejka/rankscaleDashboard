@@ -111,6 +111,19 @@ FACT_BRAND_SNAPSHOTS_SCHEMA = [
     bigquery.SchemaField("loaded_at",       "TIMESTAMP"),
 ]
 
+FACT_CITATIONS_SCHEMA = [
+    bigquery.SchemaField("snapshot_date",  "DATE",      mode="REQUIRED"),
+    bigquery.SchemaField("snapshot_week",  "STRING",    mode="REQUIRED"),
+    bigquery.SchemaField("brand_id",       "STRING",    mode="REQUIRED"),
+    bigquery.SchemaField("search_term_id", "STRING"),
+    bigquery.SchemaField("engine",         "STRING",    mode="REQUIRED"),
+    bigquery.SchemaField("domain",         "STRING",    mode="REQUIRED"),
+    bigquery.SchemaField("url",            "STRING"),
+    bigquery.SchemaField("occurrences",    "INT64",     mode="REQUIRED"),
+    bigquery.SchemaField("query",          "STRING"),
+    bigquery.SchemaField("loaded_at",      "TIMESTAMP"),
+]
+
 FACT_ANSWER_TEXTS_SCHEMA = [
     bigquery.SchemaField("execution_id",   "STRING",    mode="REQUIRED"),
     bigquery.SchemaField("search_term_id", "STRING",    mode="REQUIRED"),
@@ -455,6 +468,72 @@ def step_answer_texts(client: bigquery.Client, brand_id: str) -> None:
     bq_append_dedup(client, tbl("answer_texts"), rows, dedup_col="execution_id")
 
 
+def step_citations(client: bigquery.Client, brand_id: str) -> None:
+    """
+    POST /v1/metrics/citations → citations
+
+    Zdroj: domainSummary.topDomainsByQuery — nejgranularnější data (per query × engine × domain × url).
+    Jeden řádek = url × engine × search term × snapshot.
+    """
+    log.info("━━ KROK 5: citations")
+    ensure_fact_table(
+        client, tbl("citations"),
+        schema=FACT_CITATIONS_SCHEMA,
+        partition_field="snapshot_date",
+        cluster_fields=["brand_id", "engine", "domain"],
+    )
+    data = api_post("/v1/metrics/citations", {
+        "brandId":        brand_id,
+        "timeFrame":      TIME_FRAME,
+        "periodOffset":   0,
+        "selectedTopic":  "all",
+        "selectedEngine": "all",
+        "selectedQuery":  "all",
+    })
+
+    rows = []
+    for term_entry in data["data"].get("domainSummary", {}).get("topDomainsByQuery", []):
+        query          = term_entry.get("query", "")
+        search_term_id = (term_entry.get("searchTermIds") or [None])[0]
+
+        for engine_entry in term_entry.get("engines", []):
+            engine = engine_entry.get("engineId", "")
+
+            for domain_entry in engine_entry.get("domains", []):
+                domain      = domain_entry.get("domain", "")
+                occurrences = domain_entry.get("occurrences", 0)
+                urls        = domain_entry.get("urls") or []
+
+                if urls:
+                    for url_entry in urls:
+                        rows.append({
+                            "snapshot_date":  TODAY,
+                            "snapshot_week":  iso_week(NOW),
+                            "brand_id":       brand_id,
+                            "search_term_id": search_term_id,
+                            "engine":         engine,
+                            "domain":         domain,
+                            "url":            url_entry.get("url"),
+                            "occurrences":    url_entry.get("occurrences", 0),
+                            "query":          query,
+                        })
+                else:
+                    rows.append({
+                        "snapshot_date":  TODAY,
+                        "snapshot_week":  iso_week(NOW),
+                        "brand_id":       brand_id,
+                        "search_term_id": search_term_id,
+                        "engine":         engine,
+                        "domain":         domain,
+                        "url":            None,
+                        "occurrences":    occurrences,
+                        "query":          query,
+                    })
+
+    log.info(f"    {len(rows)} citačních záznamů")
+    bq_partition_overwrite(client, tbl("citations"), rows, date_col="snapshot_date")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
@@ -476,8 +555,9 @@ def main() -> None:
             log.info(f"━━ Zpracovávám brand {brand_id}")
             step_brand_snapshots(client, brand_id)
             step_answer_texts(client, brand_id)
+            step_citations(client, brand_id)
     else:
-        log.info("    Žádná nová data – kroky 3 a 4 přeskočeny")
+        log.info("    Žádná nová data – kroky 3, 4 a 5 přeskočeny")
 
     log.info("╔══════════════════════════════════════════════╗")
     log.info("║  ETL dokončen  ✓                             ║")

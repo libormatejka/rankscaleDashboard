@@ -110,3 +110,29 @@ CREATE TABLE `libor-matejkacz.RankScaleDashboard.answer_texts`
 )
 PARTITION BY DATE(executed_at)
 CLUSTER BY engine;
+
+
+-- ------------------------------------------------------------
+-- 5. citations
+-- Zdroj: POST /v1/metrics/citations → domainSummary.topDomainsByQuery
+-- Strategie: PARTITION OVERWRITE per snapshot_date
+--
+-- Jeden řádek = URL × engine × search term × snapshot.
+-- domain je denormalizován pro snadný GROUP BY bez parsování URL.
+-- ------------------------------------------------------------
+DROP TABLE IF EXISTS `libor-matejkacz.RankScaleDashboard.citations`;
+CREATE TABLE `libor-matejkacz.RankScaleDashboard.citations`
+(
+  snapshot_date    DATE      NOT NULL,  -- datum ETL runu (PARTITION key)
+  snapshot_week    STRING    NOT NULL,  -- ISO week, např. "2026-21"
+  brand_id         STRING    NOT NULL,  -- FK → brands.brand_id
+  search_term_id   STRING,              -- FK → search_terms (NULL pokud není dostupné)
+  engine           STRING    NOT NULL,  -- "google_ai_mode_gui" | "chatgpt_gui" | ...
+  domain           STRING    NOT NULL,  -- citovaná doména, např. "banky.cz"
+  url              STRING,              -- konkrétní citovaná URL
+  occurrences      INT64     NOT NULL,  -- počet výskytů v daném časovém okně
+  query            STRING,              -- text promptu (denorm. bez JOIN)
+  loaded_at        TIMESTAMP
+)
+PARTITION BY snapshot_date
+CLUSTER BY brand_id, engine, domain;
