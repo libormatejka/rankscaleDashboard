@@ -21,6 +21,7 @@ CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.brands` (
   name              STRING    NOT NULL,   -- název brandu
   domain            STRING,               -- doména (pokud dostupná)
   is_own_brand      BOOL,                 -- true = vlastní brand
+  is_active         BOOL,                 -- false = brand smazán v Rankscale, ale zachován pro historii
   search_term_count INT64,                -- počet sledovaných search termů
   loaded_at         TIMESTAMP             -- čas posledního ETL runu
 );

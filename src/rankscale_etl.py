@@ -71,7 +71,7 @@ _session.headers.update({
 
 def api_get(path: str, params: dict = None) -> dict:
     log.info(f"  GET {path}  params={params or {}}")
-    r = _session.get(f"{BASE_URL}{path}", params=params, timeout=30)
+    r = _session.get(f"{BASE_URL}{path}", params=params, timeout=120)
     r.raise_for_status()
     time.sleep(RATE_LIMIT_SLEEP)
     return r.json()
@@ -79,7 +79,7 @@ def api_get(path: str, params: dict = None) -> dict:
 
 def api_post(path: str, body: dict) -> dict:
     log.info(f"  POST {path}")
-    r = _session.post(f"{BASE_URL}{path}", json=body, timeout=60)
+    r = _session.post(f"{BASE_URL}{path}", json=body, timeout=120)
     r.raise_for_status()
     time.sleep(RATE_LIMIT_SLEEP)
     return r.json()
@@ -213,6 +213,53 @@ def bq_partition_overwrite(client: bigquery.Client, target: str, rows: list[dict
         _load(client, f"`{raw}${day}`", day_rows, bigquery.WriteDisposition.WRITE_TRUNCATE)
 
 
+def bq_upsert(client: bigquery.Client, target: str, rows: list[dict],
+              key_col: str) -> None:
+    """
+    UPSERT přes staging tabulku + MERGE DML.
+    - Matched rows    → UPDATE všech sloupců
+    - New rows        → INSERT
+    - Chybějící rows  → is_active = FALSE (označení jako smazané v Rankscale)
+    """
+    if not rows:
+        log.warning(f"    žádná data pro {target}, přeskakuji")
+        return
+
+    prepared = _prepare(rows)
+
+    # Deduplikace podle key_col — MERGE vyžaduje unikátní klíče ve zdroji
+    seen: dict = {}
+    for row in prepared:
+        seen[row[key_col]] = row
+    prepared = list(seen.values())
+
+    raw_target  = target.replace("`", "")
+    raw_staging = raw_target + "_staging"
+    staging_tbl = f"`{raw_staging}`"
+
+    log.info(f"    UPSERT → {target} ({len(prepared)} řádků)")
+    _load(client, staging_tbl, prepared, bigquery.WriteDisposition.WRITE_TRUNCATE, autodetect=True)
+
+    columns     = list(prepared[0].keys())
+    update_set  = ", ".join(f"T.`{c}` = S.`{c}`" for c in columns if c != key_col)
+    insert_cols = ", ".join(f"`{c}`" for c in columns)
+    insert_vals = ", ".join(f"S.`{c}`" for c in columns)
+
+    merge_sql = f"""
+    MERGE {target} AS T
+    USING {staging_tbl} AS S
+    ON T.`{key_col}` = S.`{key_col}`
+    WHEN MATCHED THEN
+      UPDATE SET {update_set}
+    WHEN NOT MATCHED BY TARGET THEN
+      INSERT ({insert_cols}) VALUES ({insert_vals})
+    WHEN NOT MATCHED BY SOURCE THEN
+      UPDATE SET T.`is_active` = FALSE, T.`loaded_at` = CURRENT_TIMESTAMP()
+    """
+    client.query(merge_sql).result()
+    log.info(f"    MERGE dokončen")
+
+
 def bq_append_dedup(client: bigquery.Client, target: str, rows: list[dict],
                     dedup_col: str) -> None:
     """Přidá pouze řádky jejichž dedup_col ještě není v tabulce."""
@@ -312,10 +359,11 @@ def step_brands(client: bigquery.Client) -> list[str]:
             "name":              b["name"],
             "domain":            b.get("url"),                          # reálný klíč je "url"
             "is_own_brand":      True,                                  # brands endpoint vrací jen vlastní brandy
+            "is_active":         True,
             "search_term_count": len(b.get("operationalSearchTerms", [])),
         })
 
-    bq_truncate(client, tbl("brands"), rows)
+    bq_upsert(client, tbl("brands"), rows, key_col="brand_id")
     return [b["id"] for b in brands]
 
 
@@ -351,7 +399,7 @@ def step_search_terms(client: bigquery.Client, brand_ids: list[str]) -> list[dic
         all_terms.extend(terms)
 
     log.info(f"    celkem {len(all_rows)} search termů")
-    bq_truncate(client, tbl("search_terms"), all_rows)
+    bq_upsert(client, tbl("search_terms"), all_rows, key_col="search_term_id")
     return all_terms
 
 
