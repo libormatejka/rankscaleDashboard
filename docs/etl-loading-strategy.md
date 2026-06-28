@@ -28,7 +28,7 @@ Každá tabulka má jinou strategii zápisu podle toho, jaká data obsahuje a ja
 WHERE is_active = TRUE
 ```
 
-**Staging tabulka:** ETL dočasně vytvoří tabulku `brands_staging` / `search_terms_staging` a po MERGE ji ponechá (přepíše při příštím runu). Lze ji ignorovat.
+**Staging tabulky:** BigQuery MERGE vyžaduje jako zdroj tabulku — nelze mergovat přímo Python list. ETL proto před každým MERGE vytvoří pomocné tabulky `brands_staging` a `search_terms_staging` (WRITE_TRUNCATE). Po MERGE zůstanou v datasetu, ale při příštím runu se přepíšou. Jejich obsah je vždy identický s tím, co se právě nahrávalo — lze je ignorovat.
 
 ---
 

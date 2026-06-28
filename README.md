@@ -21,8 +21,8 @@ Kroky 3–5 se spustí jen pokud Rankscale má novější data než BigQuery (fr
 
 | Tabulka | Popis | Strategie zápisu |
 |---------|-------|-----------------|
-| `brands` | Číselník vlastních brandů | TRUNCATE |
-| `search_terms` | Číselník dotazů (query × engine) | TRUNCATE |
+| `brands` | Číselník vlastních brandů | UPSERT (smazané brandu → `is_active = FALSE`) |
+| `search_terms` | Číselník dotazů (query × engine) | UPSERT (smazané termy → `is_active = FALSE`) |
 | `brand_snapshots` | Metriky per brand per search term per týden — **hlavní tabulka** | Partition overwrite |
 | `answer_texts` | Raw texty AI odpovědí | Append + dedup |
 | `citations` | Citované domény a URL per query a engine | Partition overwrite |
