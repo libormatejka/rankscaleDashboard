@@ -22,7 +22,6 @@ CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.brands` (
   domain            STRING,               -- doména (pokud dostupná)
   is_own_brand      BOOL,                 -- true = vlastní brand
   is_active         BOOL,                 -- false = brand smazán v Rankscale, ale zachován pro historii
-  search_term_count INT64,                -- počet sledovaných search termů
   loaded_at         TIMESTAMP             -- čas posledního ETL runu
 );
 
@@ -40,7 +39,7 @@ CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.search_terms` (
   topic_name      STRING,               -- "Brand" | "Půjčky/Úvěry" | "Investice"
   engine          STRING,               -- "google_ai_mode_gui" | "chatgpt_gui" | ...
   region          STRING,               -- "cz" | "sk" | ...
-  interval        STRING,               -- "weekly" | "daily"
+  `interval`      STRING,               -- "weekly" | "daily"
   tags            JSON,                 -- pole tagů z Rankscale
   is_active       BOOL,                 -- true = aktivní search term
   loaded_at       TIMESTAMP
@@ -76,17 +75,13 @@ CREATE TABLE `libor-matejkacz.RankScaleDashboard.brand_snapshots`
   top3_rate         FLOAT64,   -- 0–100; % výskytů na pozici 1–3
   citation_count    INT64,     -- počet URL citací tohoto brandu
   appearances       INT64,     -- počet snapshotů kde se brand objevil v daném období
-
-  -- Denormalizace pro pohodlí (bez JOIN v Tableau/Looker)
-  query             STRING,    -- text promptu
-  topic_name        STRING,    -- "Brand" | "Půjčky/Úvěry" | "Investice"
   engine            STRING,    -- "google_ai_mode_gui" | ...
   last_snapshot_at  TIMESTAMP, -- kdy proběhl poslední Rankscale snapshot
 
   loaded_at         TIMESTAMP  -- čas ETL runu
 )
 PARTITION BY snapshot_date
-CLUSTER BY is_own_brand, topic_name, engine;
+CLUSTER BY is_own_brand, engine;
 
 
 -- ------------------------------------------------------------
@@ -104,8 +99,6 @@ CREATE TABLE `libor-matejkacz.RankScaleDashboard.answer_texts`
   search_term_id  STRING    NOT NULL,   -- FK → search_terms
   executed_at     TIMESTAMP NOT NULL,   -- kdy AI engine odpověděl (PARTITION key)
   engine          STRING,               -- "google_ai_mode_gui" | ...
-  query           STRING,               -- text promptu
-  topic_name      STRING,               -- denorm.
   answer_text     STRING,               -- plný markdown text AI odpovědi
   loaded_at       TIMESTAMP
 )
@@ -132,8 +125,8 @@ CREATE TABLE `libor-matejkacz.RankScaleDashboard.citations`
   domain           STRING    NOT NULL,  -- citovaná doména, např. "banky.cz"
   url              STRING,              -- konkrétní citovaná URL
   occurrences      INT64     NOT NULL,  -- počet výskytů v daném časovém okně
-  query            STRING,              -- text promptu (denorm. bez JOIN)
   loaded_at        TIMESTAMP
 )
 PARTITION BY snapshot_date
 CLUSTER BY brand_id, engine, domain;
+

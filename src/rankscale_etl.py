@@ -104,8 +104,6 @@ FACT_BRAND_SNAPSHOTS_SCHEMA = [
     bigquery.SchemaField("top3_rate",       "FLOAT64"),
     bigquery.SchemaField("citation_count",  "INT64"),
     bigquery.SchemaField("appearances",     "INT64"),
-    bigquery.SchemaField("query",           "STRING"),
-    bigquery.SchemaField("topic_name",      "STRING"),
     bigquery.SchemaField("engine",          "STRING"),
     bigquery.SchemaField("last_snapshot_at","TIMESTAMP"),
     bigquery.SchemaField("loaded_at",       "TIMESTAMP"),
@@ -120,7 +118,6 @@ FACT_CITATIONS_SCHEMA = [
     bigquery.SchemaField("domain",         "STRING",    mode="REQUIRED"),
     bigquery.SchemaField("url",            "STRING"),
     bigquery.SchemaField("occurrences",    "INT64",     mode="REQUIRED"),
-    bigquery.SchemaField("query",          "STRING"),
     bigquery.SchemaField("loaded_at",      "TIMESTAMP"),
 ]
 
@@ -129,8 +126,6 @@ FACT_ANSWER_TEXTS_SCHEMA = [
     bigquery.SchemaField("search_term_id", "STRING",    mode="REQUIRED"),
     bigquery.SchemaField("executed_at",    "TIMESTAMP", mode="REQUIRED"),
     bigquery.SchemaField("engine",         "STRING"),
-    bigquery.SchemaField("query",          "STRING"),
-    bigquery.SchemaField("topic_name",     "STRING"),
     bigquery.SchemaField("answer_text",    "STRING"),
     bigquery.SchemaField("loaded_at",      "TIMESTAMP"),
 ]
@@ -360,7 +355,6 @@ def step_brands(client: bigquery.Client) -> list[str]:
             "domain":            b.get("url"),                          # reálný klíč je "url"
             "is_own_brand":      True,                                  # brands endpoint vrací jen vlastní brandy
             "is_active":         True,
-            "search_term_count": len(b.get("operationalSearchTerms", [])),
         })
 
     bq_upsert(client, tbl("brands"), rows, key_col="brand_id")
@@ -428,7 +422,7 @@ def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
         client, tbl("brand_snapshots"),
         schema=FACT_BRAND_SNAPSHOTS_SCHEMA,
         partition_field="snapshot_date",
-        cluster_fields=["is_own_brand", "topic_name", "engine"],
+        cluster_fields=["is_own_brand", "engine"],
     )
     data  = api_post("/v1/metrics/search-terms-report", {
         "brandId":            brand_id,
@@ -448,9 +442,7 @@ def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
         last_snap = t.get("lastSnapshotAt")
         snap_date = snapshot_date_from(last_snap)
         snap_week = iso_week(last_snap)
-        topic     = t.get("topic") or {}
         engine    = (t.get("aiSearchEngines") or [""])[0]
-        query     = t.get("query", "")
 
         def make_row(brand_data: dict, is_own: bool) -> dict:
             return {
@@ -460,7 +452,6 @@ def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
                 "brand_name":      brand_data.get("name") or "unknown",  # REQUIRED – nesmí být NULL
                 "is_own_brand":    is_own,
                 "brand_id":        brand_id if is_own else None,
-                # metriky
                 "visibility_score": brand_data.get("visibilityScore"),
                 "avg_sentiment":    brand_data.get("avgSentiment"),
                 "avg_rank":         brand_data.get("avgRank"),
@@ -469,9 +460,6 @@ def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
                 "top3_rate":        brand_data.get("top3"),
                 "citation_count":   brand_data.get("citationCount"),
                 "appearances":      brand_data.get("appearances"),
-                # denorm
-                "query":            query,
-                "topic_name":       topic.get("name"),
                 "engine":           engine,
                 "last_snapshot_at": last_snap,
             }
@@ -512,15 +500,12 @@ def step_answer_texts(client: bigquery.Client, brand_id: str) -> None:
 
     rows = []
     for t in terms:
-        topic = t.get("topic") or {}
         for at in t.get("answerTexts") or []:
             rows.append({
                 "execution_id":   at["executionId"],
                 "search_term_id": t["searchTermId"],
                 "executed_at":    at.get("executedAt"),
                 "engine":         at.get("engine"),
-                "query":          t.get("query"),
-                "topic_name":     topic.get("name"),
                 "answer_text":    at.get("answerText"),
             })
 
@@ -575,7 +560,6 @@ def step_citations(client: bigquery.Client, brand_id: str) -> None:
                             "domain":         domain,
                             "url":            url_entry.get("url"),
                             "occurrences":    url_entry.get("occurrences", 0),
-                            "query":          query,
                         })
                 else:
                     rows.append({
@@ -587,7 +571,6 @@ def step_citations(client: bigquery.Client, brand_id: str) -> None:
                         "domain":         domain,
                         "url":            None,
                         "occurrences":    occurrences,
-                        "query":          query,
                     })
 
     log.info(f"    {len(rows)} citačních záznamů")
