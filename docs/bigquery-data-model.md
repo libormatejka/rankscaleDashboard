@@ -21,6 +21,95 @@ Při změně nástroje se změní ETL a BQ schema, Snowflake reporting schema z�
 
 ---
 
+## Diagram závislostí
+
+```mermaid
+erDiagram
+
+    brands {
+        STRING brand_id PK
+        STRING name
+        STRING domain
+        BOOL   is_own_brand
+        BOOL   is_active
+        INT64  search_term_count
+        TIMESTAMP loaded_at
+    }
+
+    search_terms {
+        STRING search_term_id PK
+        STRING brand_id       FK
+        STRING query
+        STRING topic_id
+        STRING topic_name
+        STRING engine
+        STRING region
+        STRING interval
+        JSON   tags
+        BOOL   is_active
+        TIMESTAMP loaded_at
+    }
+
+    brand_snapshots {
+        DATE   snapshot_date
+        STRING snapshot_week
+        STRING search_term_id FK
+        STRING brand_id       FK
+        STRING brand_name
+        BOOL   is_own_brand
+        FLOAT64 visibility_score
+        FLOAT64 avg_sentiment
+        FLOAT64 avg_rank
+        INT64  latest_rank
+        FLOAT64 detection_rate
+        FLOAT64 top3_rate
+        INT64  citation_count
+        INT64  appearances
+        STRING query
+        STRING topic_name
+        STRING engine
+        TIMESTAMP last_snapshot_at
+        TIMESTAMP loaded_at
+    }
+
+    answer_texts {
+        STRING    execution_id PK
+        STRING    search_term_id FK
+        TIMESTAMP executed_at
+        STRING    engine
+        STRING    query
+        STRING    topic_name
+        STRING    answer_text
+        TIMESTAMP loaded_at
+    }
+
+    citations {
+        DATE   snapshot_date
+        STRING snapshot_week
+        STRING brand_id       FK
+        STRING search_term_id FK
+        STRING engine
+        STRING domain
+        STRING url
+        INT64  occurrences
+        STRING query
+        TIMESTAMP loaded_at
+    }
+
+    brands         ||--o{ search_terms    : "brand_id"
+    brands         ||--o{ brand_snapshots : "brand_id (NULL pro nesledované competitors)"
+    brands         ||--o{ citations       : "brand_id"
+    search_terms   ||--o{ brand_snapshots : "search_term_id"
+    search_terms   ||--o{ answer_texts    : "search_term_id"
+    search_terms   ||--o{ citations       : "search_term_id (může být NULL)"
+```
+
+> **Poznámka k `brand_snapshots`:** Obsahuje i competitors které nejsou v tabulce `brands` — u nich je `brand_id = NULL`. JOIN na `brands` funguje jen pro vlastní brandy (`is_own_brand = TRUE`).
+>
+> **Poznámka k `query` a `topic_name`:** Jsou denormalizované přímo v `brand_snapshots`, `answer_texts` a `citations`. Pokud prompt přejmenujete, historické řádky budou mít starý název. Pro vždy aktuální název joinujte na `search_terms`.
+
+---
+
 ## Tabulky
 
 ### 1. `brands` — číselník brandů
