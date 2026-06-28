@@ -214,7 +214,7 @@ def bq_partition_overwrite(client: bigquery.Client, target: str, rows: list[dict
 
 
 def bq_upsert(client: bigquery.Client, target: str, rows: list[dict],
-              key_col: str) -> None:
+              key_col: str, source_filter: Optional[str] = None) -> None:
     """
     UPSERT přes staging tabulku + MERGE DML.
     - Matched rows    → UPDATE všech sloupců
@@ -253,7 +253,7 @@ def bq_upsert(client: bigquery.Client, target: str, rows: list[dict],
       UPDATE SET {update_set}
     WHEN NOT MATCHED BY TARGET THEN
       INSERT ({insert_cols}) VALUES ({insert_vals})
-    WHEN NOT MATCHED BY SOURCE THEN
+    WHEN NOT MATCHED BY SOURCE {"AND " + source_filter if source_filter else ""} THEN
       UPDATE SET T.`is_active` = FALSE, T.`loaded_at` = CURRENT_TIMESTAMP()
     """
     client.query(merge_sql).result()
@@ -378,23 +378,28 @@ def step_search_terms(client: bigquery.Client, brand_ids: list[str]) -> list[dic
     all_terms = []
 
     for brand_id in brand_ids:
-        terms   = []
-        offset  = 0
-        page_size = 500
-        while True:
-            data  = api_get("/v1/metrics/search-terms", {"brandId": brand_id, "limit": page_size, "offset": offset})
-            page  = data["data"]["searchTerms"]
-            terms.extend(page)
-            has_more = (data.get("data", {}).get("pagination") or {}).get("hasMore", False)
-            if not has_more or len(page) < page_size:
-                break
-            offset += page_size
-            time.sleep(RATE_LIMIT_SLEEP)
-        log.info(f"    brand {brand_id}: {len(terms)} search termů")
+        try:
+            terms     = []
+            offset    = 0
+            page_size = 500
+            while True:
+                data  = api_get("/v1/metrics/search-terms", {"brandId": brand_id, "limit": page_size, "offset": offset})
+                page  = data["data"]["searchTerms"]
+                terms.extend(page)
+                has_more = (data.get("data", {}).get("pagination") or {}).get("hasMore", False)
+                if not has_more or len(page) < page_size:
+                    break
+                offset += page_size
+                time.sleep(RATE_LIMIT_SLEEP)
+            log.info(f"    brand {brand_id}: {len(terms)} search termů")
+        except Exception as e:
+            log.warning(f"    brand {brand_id}: API selhalo ({e}), přeskakuji — stávající záznamy v BQ zůstanou beze změny")
+            continue
 
+        rows = []
         for t in terms:
             topic = t.get("searchTermTopicRef") or {}
-            all_rows.append({
+            rows.append({
                 "search_term_id": t["id"],
                 "brand_id":       brand_id,
                 "query":          t.get("term"),
@@ -406,10 +411,14 @@ def step_search_terms(client: bigquery.Client, brand_ids: list[str]) -> list[dic
                 "tags":           t.get("tags", []),
                 "is_active":      t.get("status") == "active",
             })
+        all_rows.extend(rows)
         all_terms.extend(terms)
 
+        # UPSERT per brand — NOT MATCHED BY SOURCE platí jen pro tento brand_id
+        bq_upsert(client, tbl("search_terms"), rows, key_col="search_term_id",
+                  source_filter=f"T.`brand_id` = '{brand_id}'")
+
     log.info(f"    celkem {len(all_rows)} search termů")
-    bq_upsert(client, tbl("search_terms"), all_rows, key_col="search_term_id")
     return all_terms
 
 
