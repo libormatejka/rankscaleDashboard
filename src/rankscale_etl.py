@@ -378,8 +378,18 @@ def step_search_terms(client: bigquery.Client, brand_ids: list[str]) -> list[dic
     all_terms = []
 
     for brand_id in brand_ids:
-        data  = api_get("/v1/metrics/search-terms", {"brandId": brand_id})
-        terms = data["data"]["searchTerms"]
+        terms   = []
+        offset  = 0
+        page_size = 500
+        while True:
+            data  = api_get("/v1/metrics/search-terms", {"brandId": brand_id, "limit": page_size, "offset": offset})
+            page  = data["data"]["searchTerms"]
+            terms.extend(page)
+            has_more = (data.get("data", {}).get("pagination") or {}).get("hasMore", False)
+            if not has_more or len(page) < page_size:
+                break
+            offset += page_size
+            time.sleep(RATE_LIMIT_SLEEP)
         log.info(f"    brand {brand_id}: {len(terms)} search termů")
 
         for t in terms:
