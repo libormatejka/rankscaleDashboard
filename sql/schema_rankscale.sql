@@ -40,7 +40,7 @@ CREATE OR REPLACE TABLE `libor-matejkacz.RankScaleDashboard.search_terms` (
   engine          STRING,               -- "google_ai_mode_gui" | "chatgpt_gui" | ...
   region          STRING,               -- "cz" | "sk" | ...
   `interval`      STRING,               -- "weekly" | "daily"
-  tags            JSON,                 -- pole tagů z Rankscale
+  tags            STRING,               -- pole tagů z Rankscale (JSON string, např. '["dip","investice"]')
   is_active       BOOL,                 -- true = aktivní search term
   loaded_at       TIMESTAMP
 );
