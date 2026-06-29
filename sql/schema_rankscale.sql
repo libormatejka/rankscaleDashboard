@@ -76,6 +76,7 @@ CREATE TABLE `libor-matejkacz.RankScaleDashboard.brand_snapshots`
   citation_count    INT64,     -- počet URL citací tohoto brandu
   appearances       INT64,     -- počet snapshotů kde se brand objevil v daném období
   engine            STRING,    -- "google_ai_mode_gui" | ...
+  topic_id          STRING,    -- FK → search_terms.topic_id (platný v době snapshotu)
   last_snapshot_at  TIMESTAMP, -- kdy proběhl poslední Rankscale snapshot
 
   loaded_at         TIMESTAMP  -- čas ETL runu

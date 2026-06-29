@@ -105,6 +105,7 @@ FACT_BRAND_SNAPSHOTS_SCHEMA = [
     bigquery.SchemaField("citation_count",  "INT64"),
     bigquery.SchemaField("appearances",     "INT64"),
     bigquery.SchemaField("engine",          "STRING"),
+    bigquery.SchemaField("topic_id",        "STRING"),
     bigquery.SchemaField("last_snapshot_at","TIMESTAMP"),
     bigquery.SchemaField("loaded_at",       "TIMESTAMP"),
 ]
@@ -443,6 +444,7 @@ def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
         snap_date = snapshot_date_from(last_snap)
         snap_week = iso_week(last_snap)
         engine    = (t.get("aiSearchEngines") or [""])[0]
+        topic     = t.get("topic") or {}
 
         def make_row(brand_data: dict, is_own: bool) -> dict:
             return {
@@ -461,6 +463,7 @@ def step_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
                 "citation_count":   brand_data.get("citationCount"),
                 "appearances":      brand_data.get("appearances"),
                 "engine":           engine,
+                "topic_id":         topic.get("id"),
                 "last_snapshot_at": last_snap,
             }
 
