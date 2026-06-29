@@ -1,0 +1,44 @@
+name: Rankscale → BigQuery RAW Extract
+
+on:
+  schedule:
+    # Každý den v 6:30 UTC (aby neběžel souběžně se starým ETL)
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+    inputs:
+      time_frame:
+        description: "Časové okno (7d / 30d / 3m / 1y)"
+        required: false
+        default: "7d"
+
+jobs:
+  extract:
+    name: Raw Extract
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalace závislostí
+        run: pip install -r requirements.txt
+
+      - name: Spuštění extractu
+        env:
+          RANKSCALE_API_KEY: ${{ secrets.RANKSCALE_API_KEY }}
+          GCP_PROJECT:       ${{ secrets.GCP_PROJECT }}
+          BQ_DATASET:        ${{ secrets.BQ_DATASET }}
+          GCP_SA_JSON:       ${{ secrets.GCP_SA_JSON }}
+          TIME_FRAME:        ${{ github.event.inputs.time_frame || '7d' }}
+        run: python src/rankscale_extract.py
+
+      - name: Oznámení při selhání
+        if: failure()
+        run: echo "❌ Extract selhal – zkontroluj logy výše"

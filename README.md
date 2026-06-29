@@ -1,33 +1,52 @@
-# Rankscale → BigQuery ETL
+# Rankscale → BigQuery
 
-Denní ETL který tahá data z Rankscale Metrics API a ukládá je do BigQuery.
-Běží automaticky každý den v 6:00 UTC přes GitHub Actions.
+Denní pipeline která tahá data z Rankscale Metrics API do BigQuery.
+Existují dva skripty — liší se přístupem k transformaci dat.
 
-## Co načítá
+---
 
-| Krok | Endpoint | BQ tabulka |
-|------|----------|------------|
-| 1 | GET /v1/metrics/brands | `brands` |
-| 2 | GET /v1/metrics/search-terms | `search_terms` |
-| 3 | POST /v1/metrics/search-terms-report | `brand_snapshots` |
-| 4 | POST /v1/metrics/search-terms-report (answer texts) | `answer_texts` |
-| 5 | POST /v1/metrics/citations | `citations` |
+## Dva skripty — který použít?
 
-Kroky 3–5 se spustí jen pokud Rankscale má novější data než BigQuery (freshness check).
+| | `rankscale_extract.py` ✅ aktivní | `rankscale_etl.py` archiv |
+|---|---|---|
+| **Přístup** | EL — čistý extract, žádná logika | ETL — transformace přímo v Pythonu |
+| **BQ tabulky** | `raw_*` (append každý den) | `brands`, `search_terms`, `brand_snapshots`, ... |
+| **Transformace** | Keboola | Python script |
+| **Workflow** | `extract.yml` (6:30 UTC) | `etl.yml` (6:00 UTC) |
+| **Složitost** | ~200 řádků | ~600 řádků |
+
+**Používej `rankscale_extract.py`.** Starý ETL je zachován pro případ potřeby, ale není aktivně udržován.
+
+---
+
+## Co extract stahuje
+
+| Endpoint | Raw tabulka |
+|----------|-------------|
+| GET /v1/metrics/brands | `raw_brands` |
+| GET /v1/metrics/search-terms | `raw_search_terms` |
+| POST /v1/metrics/search-terms-report | `raw_brand_snapshots` |
+| POST /v1/metrics/search-terms-report (answer texts) | `raw_answer_texts` |
+| POST /v1/metrics/citations | `raw_citations` |
+
+Každý run **APPENDuje** nové řádky — historická data zůstávají. Dedup, is_active flagy a joiny řeší Keboola.
 
 ## BigQuery tabulky
 
 **Dataset:** `libor-matejkacz.RankScaleDashboard`
 
-| Tabulka | Popis | Strategie zápisu |
-|---------|-------|-----------------|
-| `brands` | Číselník vlastních brandů | UPSERT (smazané brandu → `is_active = FALSE`) |
-| `search_terms` | Číselník dotazů (query × engine) | UPSERT (smazané termy → `is_active = FALSE`) |
-| `brand_snapshots` | Metriky per brand per search term per týden — **hlavní tabulka** | Partition overwrite |
-| `answer_texts` | Raw texty AI odpovědí | Append + dedup |
-| `citations` | Citované domény a URL per query a engine | Partition overwrite |
+| Tabulka | Popis |
+|---------|-------|
+| `raw_brands` | Snapshot brandů per ETL run |
+| `raw_search_terms` | Snapshot search termů (prompt × engine) per ETL run |
+| `raw_brand_snapshots` | Metriky per brand per search term — **hlavní tabulka** |
+| `raw_answer_texts` | Raw texty AI odpovědí |
+| `raw_citations` | Citované domény a URL |
 
-Detailní popis tabulek a příklady SQL: `docs/bigquery-data-model.md`
+Detailní popis tabulek: `docs/bigquery-data-model.md`
+DDL: `sql/schema_raw.sql`
+
+---
 
 ## Nastavení
 
@@ -53,33 +72,29 @@ a přidej tyto 4 secrets:
 
 ### 3. Spuštění
 
-- **Automaticky**: každý den v 6:00 UTC
-- **Ručně**: GitHub → Actions → "Rankscale → BigQuery ETL" → **Run workflow**
+- **Automaticky**: každý den v 6:30 UTC
+- **Ručně**: GitHub → Actions → "Rankscale → BigQuery RAW Extract" → **Run workflow**
+- **Backfill**: při ručním spuštění lze zadat `time_frame` (např. `1y` pro celou historii)
+
+---
 
 ## Lokální vývoj
 
 ```bash
-# Vytvoř virtuální prostředí
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 
-# Nainstaluj závislosti
 pip install -r requirements.txt
 
-# Nastav proměnné prostředí
 export RANKSCALE_API_KEY=rk_tvuj_klic
 export GCP_PROJECT=libor-matejkacz
 export BQ_DATASET=RankScaleDashboard
-# GCP_SA_JSON není potřeba lokálně pokud máš Application Default Credentials:
 gcloud auth application-default login
 
-# Spusť
-python src/rankscale_etl.py
+python src/rankscale_extract.py
 ```
 
 ## Časové okno dat
 
-Skript tahá vždy posledních `7d` dat (konstanta `TIME_FRAME` v ETL skriptu).
-Partition overwrite a dedup zajistí že duplikáty nevzniknou.
-Pokud chceš načíst historická data zpětně, změň `TIME_FRAME` na `30d` nebo `3m`
-a spusť ručně.
+Script stahuje posledních `7d` dat (výchozí hodnota `TIME_FRAME`).
+Pro backfill historických dat spusť ručně z GitHub Actions a zvol `time_frame = 1y`.
