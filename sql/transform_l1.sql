@@ -59,8 +59,11 @@ SELECT
   tags,
   region,
   `interval`,
-  status = 'active' AS is_active,
-  etl_loaded_at AS updated_at
+  status = 'active'    AS is_active,
+  created_at,
+  last_execution_time,
+  next_execution_time,
+  etl_loaded_at        AS updated_at
 FROM ranked
 WHERE rn = 1;
 

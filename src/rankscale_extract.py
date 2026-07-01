@@ -1,7 +1,11 @@
 """
-Rankscale → BigQuery  |  Raw Extract
+Rankscale → BigQuery  |  Raw Extract  (L0 vrstva)
 Stahuje data z Rankscale API a ukládá je 1:1 do BigQuery (raw_ tabulky).
-Žádná transformační logika — ta patří do Kebooly.
+Žádná transformační logika — ta patří do transformačních SQL skriptů.
+
+Režimy spuštění:
+  - Denní run (výchozí): stáhne aktuální týden, přeskočí pokud nejsou nová data
+  - Backfill:            BACKFILL_WEEKS=N projde N týdnů zpět (vždy zapíše)
 """
 
 import io
@@ -16,12 +20,12 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 
 # ── Konfigurace ────────────────────────────────────────────────────────────────
-API_BASE    = "https://rankscale.ai"
-API_KEY     = os.environ["RANKSCALE_API_KEY"]
-GCP_PROJECT = os.environ["GCP_PROJECT"]
-BQ_DATASET  = os.environ["BQ_DATASET"]
-TIME_FRAME  = os.environ.get("TIME_FRAME", "7d")
-RATE_SLEEP  = 0.5
+API_BASE       = "https://rankscale.ai"
+API_KEY        = os.environ["RANKSCALE_API_KEY"]
+GCP_PROJECT    = os.environ["GCP_PROJECT"]
+BQ_DATASET     = os.environ["BQ_DATASET"]
+BACKFILL_WEEKS = int(os.environ["BACKFILL_WEEKS"]) if os.environ.get("BACKFILL_WEEKS") else None
+RATE_SLEEP     = 0.5
 
 NOW = datetime.now(timezone.utc).isoformat()
 
@@ -33,7 +37,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-# ── BigQuery ───────────────────────────────────────────────────────────────────
+# ── BigQuery helpers ───────────────────────────────────────────────────────────
 def make_client() -> bigquery.Client:
     sa_json = os.environ.get("GCP_SA_JSON")
     if sa_json:
@@ -51,7 +55,7 @@ def tbl(name: str) -> str:
 
 def bq_append(client: bigquery.Client, table: str, rows: list[dict]) -> None:
     if not rows:
-        log.info(f"  → raw_{table.split('.')[-1]}: 0 řádků, přeskakuji")
+        log.info(f"    → {table.split('.')[-1]}: 0 řádků, přeskakuji")
         return
     for row in rows:
         row["etl_loaded_at"] = NOW
@@ -66,7 +70,21 @@ def bq_append(client: bigquery.Client, table: str, rows: list[dict]) -> None:
         table,
         job_config=cfg,
     ).result()
-    log.info(f"  → {table.split('.')[-1]}: {len(rows)} řádků")
+    log.info(f"    → {table.split('.')[-1]}: {len(rows)} řádků zapsáno")
+
+
+def bq_max_snapshot(client: bigquery.Client, brand_id: str) -> datetime | None:
+    """Vrátí MAX(last_snapshot_at) z raw_brand_snapshots pro daný brand. None pokud tabulka prázdná."""
+    query = f"""
+        SELECT MAX(last_snapshot_at) AS max_snap
+        FROM `{GCP_PROJECT}.{BQ_DATASET}.raw_brand_snapshots`
+        WHERE brand_id = '{brand_id}'
+    """
+    try:
+        rows = list(client.query(query).result())
+        return rows[0].max_snap if rows and rows[0].max_snap else None
+    except Exception:
+        return None
 
 
 # ── Rankscale API ──────────────────────────────────────────────────────────────
@@ -124,6 +142,7 @@ def extract_search_terms(client: bigquery.Client, brand_ids: list[str]) -> None:
                 "interval":             t.get("interval"),
                 "tags":                 json.dumps(t.get("tags", []), ensure_ascii=False),
                 "status":               t.get("status"),
+                "created_at":           t.get("createdAt"),
                 "last_execution_time":  t.get("lastExecutionTime"),
                 "next_execution_time":  t.get("nextScheduledExecutionTime"),
                 "executions_amount":    t.get("executionsAmount"),
@@ -133,11 +152,16 @@ def extract_search_terms(client: bigquery.Client, brand_ids: list[str]) -> None:
         time.sleep(RATE_SLEEP)
 
 
-def extract_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
-    log.info(f"── brand_snapshots  ({brand_id})")
+def _fetch_snapshots(brand_id: str, period_offset: int) -> tuple[list[dict], datetime | None]:
+    """
+    Zavolá search-terms-report API a vrátí (rows, api_max_snapshot_at).
+    rows = připravené řádky pro raw_brand_snapshots.
+    api_max_snapshot_at = nejnovější lastSnapshotAt ze všech search termů v response.
+    """
     data  = api_post("/v1/metrics/search-terms-report", {
         "brandId":            brand_id,
-        "timeFrame":          TIME_FRAME,
+        "timeFrame":          "7d",
+        "periodOffset":       period_offset,
         "selectedTopic":      "all",
         "selectedTags":       "all",
         "selectedEngine":     "all",
@@ -146,48 +170,55 @@ def extract_brand_snapshots(client: bigquery.Client, brand_id: str) -> None:
     })
     terms = data["data"].get("searchTerms", [])
     rows  = []
+    max_snap = None
 
     for t in terms:
         topic  = t.get("topic") or {}
         engine = (t.get("aiSearchEngines") or [""])[0]
-        base   = {
+        snap   = t.get("lastSnapshotAt")
+
+        if snap:
+            snap_dt = datetime.fromisoformat(snap.replace("Z", "+00:00"))
+            if max_snap is None or snap_dt > max_snap:
+                max_snap = snap_dt
+
+        base = {
             "brand_id":         brand_id,
             "search_term_id":   t["searchTermId"],
             "engine":           engine,
             "topic_id":         topic.get("id"),
             "topic_name":       topic.get("name"),
-            "last_snapshot_at": t.get("lastSnapshotAt"),
+            "last_snapshot_at": snap,
         }
 
-        def make_brand_row(b: dict, is_own: bool) -> dict:
+        def make_row(b: dict, is_own: bool) -> dict:
             return {
                 **base,
-                "brand_name":      b.get("name"),
-                "is_own_brand":    is_own,
+                "brand_name":       b.get("name"),
+                "is_own_brand":     is_own,
                 "visibility_score": b.get("visibilityScore"),
-                "avg_sentiment":   b.get("avgSentiment"),
-                "avg_rank":        b.get("avgRank"),
-                "latest_rank":     b.get("latestRank"),
-                "detection_rate":  b.get("detectionRate"),
-                "top3_rate":       b.get("top3"),
-                "citation_count":  b.get("citationCount"),
-                "appearances":     b.get("appearances"),
+                "avg_sentiment":    b.get("avgSentiment"),
+                "avg_rank":         b.get("avgRank"),
+                "latest_rank":      b.get("latestRank"),
+                "detection_rate":   b.get("detectionRate"),
+                "top3_rate":        b.get("top3"),
+                "citation_count":   b.get("citationCount"),
+                "appearances":      b.get("appearances"),
             }
 
         if "ownBrand" in t:
-            rows.append(make_brand_row(t["ownBrand"], is_own=True))
+            rows.append(make_row(t["ownBrand"], is_own=True))
         for comp in t.get("competitors", []):
-            rows.append(make_brand_row(comp, is_own=False))
+            rows.append(make_row(comp, is_own=False))
 
-    bq_append(client, tbl("brand_snapshots"), rows)
-    log.info(f"    {len(rows)} řádků (vlastní brand + competitors)")
+    return rows, max_snap
 
 
-def extract_answer_texts(client: bigquery.Client, brand_id: str) -> None:
-    log.info(f"── answer_texts  ({brand_id})")
+def _fetch_answer_texts(brand_id: str, period_offset: int) -> list[dict]:
     data  = api_post("/v1/metrics/search-terms-report", {
         "brandId":            brand_id,
-        "timeFrame":          TIME_FRAME,
+        "timeFrame":          "7d",
+        "periodOffset":       period_offset,
         "selectedTopic":      "all",
         "selectedTags":       "all",
         "selectedEngine":     "all",
@@ -206,15 +237,45 @@ def extract_answer_texts(client: bigquery.Client, brand_id: str) -> None:
                 "engine":         at.get("engine"),
                 "answer_text":    at.get("answerText"),
             })
-    bq_append(client, tbl("answer_texts"), rows)
-    log.info(f"    {len(rows)} textů")
+    return rows
+
+
+def extract_snapshots_and_texts(
+    client: bigquery.Client,
+    brand_id: str,
+    period_offset: int,
+    force: bool = False,
+) -> bool:
+    """
+    Stáhne brand_snapshots a answer_texts pro daný brand a offset.
+    force=True: vždy zapíše (backfill).
+    force=False: přeskočí pokud BQ už má data pro tento snapshot (denní run).
+    Vrátí True pokud data byla zapsána, False pokud přeskočeno.
+    """
+    log.info(f"── brand_snapshots + answer_texts  (brand={brand_id}, offset={period_offset})")
+
+    snap_rows, api_max = _fetch_snapshots(brand_id, period_offset)
+
+    if not force and period_offset == 0:
+        bq_max = bq_max_snapshot(client, brand_id)
+        if api_max and bq_max and api_max <= bq_max:
+            log.info(f"    → přeskočeno: BQ již má snapshot {api_max.date()} (žádná nová data)")
+            return False
+
+    bq_append(client, tbl("brand_snapshots"), snap_rows)
+    time.sleep(RATE_SLEEP)
+
+    text_rows = _fetch_answer_texts(brand_id, period_offset)
+    bq_append(client, tbl("answer_texts"), text_rows)
+
+    return True
 
 
 def extract_citations(client: bigquery.Client, brand_id: str) -> None:
-    log.info(f"── citations  ({brand_id})")
+    log.info(f"── citations  (brand={brand_id})")
     data = api_post("/v1/metrics/citations", {
         "brandId":   brand_id,
-        "timeFrame": TIME_FRAME,
+        "timeFrame": "7d",
     })
     rows = []
     for term_entry in data["data"].get("domainSummary", {}).get("topDomainsByQuery", []):
@@ -248,34 +309,43 @@ def extract_citations(client: bigquery.Client, brand_id: str) -> None:
                         "occurrences":    occurrences,
                     })
     bq_append(client, tbl("citations"), rows)
-    log.info(f"    {len(rows)} citací")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main() -> None:
-    log.info("╔══════════════════════════════════════╗")
-    log.info(f"║  Rankscale Raw Extract  TIME_FRAME={TIME_FRAME}  ║")
-    log.info("╚══════════════════════════════════════╝")
+    mode = f"BACKFILL {BACKFILL_WEEKS} týdnů" if BACKFILL_WEEKS else "denní run"
+    log.info("╔══════════════════════════════════════════╗")
+    log.info(f"║  Rankscale Raw Extract  [{mode}]")
+    log.info("╚══════════════════════════════════════════╝")
 
     client    = make_client()
     brand_ids = extract_brands(client)
     extract_search_terms(client, brand_ids)
 
+    # Backfill: offset N-1 → 0 (od nejstaršího po nejnovější)
+    # Denní run: jen offset 0
+    offsets = list(range(BACKFILL_WEEKS - 1, -1, -1)) if BACKFILL_WEEKS else [0]
+    is_backfill = bool(BACKFILL_WEEKS)
+
     for brand_id in brand_ids:
         log.info(f"━━ Brand: {brand_id}")
         try:
-            extract_brand_snapshots(client, brand_id)
-            time.sleep(RATE_SLEEP)
-            extract_answer_texts(client, brand_id)
-            time.sleep(RATE_SLEEP)
+            for offset in offsets:
+                written = extract_snapshots_and_texts(
+                    client, brand_id, offset, force=is_backfill
+                )
+                time.sleep(RATE_SLEEP)
+
+            # Citations: vždy jen aktuální týden (nemají vlastní timestamp pro historii)
             extract_citations(client, brand_id)
             time.sleep(RATE_SLEEP)
+
         except Exception as e:
             log.error(f"Brand {brand_id} selhal: {e}")
 
-    log.info("╔══════════════════════════════════════╗")
-    log.info("║  Hotovo ✓                             ║")
-    log.info("╚══════════════════════════════════════╝")
+    log.info("╔══════════════════════════════════════════╗")
+    log.info("║  Hotovo ✓                                 ║")
+    log.info("╚══════════════════════════════════════════╝")
 
 
 if __name__ == "__main__":
