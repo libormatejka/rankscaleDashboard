@@ -1,0 +1,44 @@
+name: Rankscale → BigQuery Report Extract
+
+on:
+  schedule:
+    # Každý den v 7:00 UTC (po hlavním extractu v 6:30)
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      backfill_start:
+        description: "Backfill: datum od kdy stáhnout (YYYY-MM-DD, např. 2026-02-01). Prázdné = posledních 90 dní."
+        required: false
+        default: ""
+
+jobs:
+  extract_report:
+    name: Report Extract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalace závislostí
+        run: pip install -r requirements.txt
+
+      - name: Spuštění report extractu
+        env:
+          RANKSCALE_API_KEY: ${{ secrets.RANKSCALE_API_KEY }}
+          GCP_PROJECT:       ${{ secrets.GCP_PROJECT }}
+          BQ_DATASET:        ${{ secrets.BQ_DATASET }}
+          GCP_SA_JSON:       ${{ secrets.GCP_SA_JSON }}
+          BACKFILL_START:    ${{ github.event.inputs.backfill_start }}
+        run: python src/rankscale_report_extract.py
+
+      - name: Oznámení při selhání
+        if: failure()
+        run: echo "❌ Report extract selhal – zkontroluj logy výše"
