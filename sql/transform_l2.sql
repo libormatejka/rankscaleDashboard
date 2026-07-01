@@ -27,6 +27,8 @@ SELECT
   st.region,
   st.`interval`                       AS refresh_interval,
   st.is_active                        AS is_search_term_active,
+  st.last_execution_time,             -- kdy byl prompt naposledy spuštěn (použij pro timeline)
+  st.next_execution_time,             -- kdy bude spuštěn příště
 
   -- topic (historický z snapshotu — platný v době měření)
   s.topic_id,
@@ -38,7 +40,10 @@ SELECT
   -- engine
   s.engine,
 
-  -- brand kontext
+  -- owning brand = čí monitoring tento search_term patří (vždy vyplněno)
+  st.brand_id                           AS owning_brand_id,
+
+  -- brand kontext (brand který se zobrazil v AI odpovědi)
   s.brand_name,
   s.brand_id,
   s.is_own_brand,

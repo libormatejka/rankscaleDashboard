@@ -6,10 +6,10 @@ on:
     - cron: "30 6 * * *"
   workflow_dispatch:
     inputs:
-      time_frame:
-        description: "Časové okno (7d / 30d / 3m / 1y)"
+      backfill_weeks:
+        description: "Backfill: počet týdnů zpět (např. 52 = 1 rok). Prázdné = normální denní run."
         required: false
-        default: "7d"
+        default: ""
 
 jobs:
   extract:
@@ -36,7 +36,7 @@ jobs:
           GCP_PROJECT:       ${{ secrets.GCP_PROJECT }}
           BQ_DATASET:        ${{ secrets.BQ_DATASET }}
           GCP_SA_JSON:       ${{ secrets.GCP_SA_JSON }}
-          TIME_FRAME:        ${{ github.event.inputs.time_frame || '7d' }}
+          BACKFILL_WEEKS:    ${{ github.event.inputs.backfill_weeks }}
         run: python src/rankscale_extract.py
 
       - name: Oznámení při selhání

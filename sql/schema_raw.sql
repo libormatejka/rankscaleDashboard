@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.raw_search_terms`
   `interval`          STRING,
   tags                STRING,    -- JSON string, např. '["dip","investice"]'
   status              STRING,    -- "active" | "inactive"
+  created_at          TIMESTAMP,
   last_execution_time TIMESTAMP,
   next_execution_time TIMESTAMP,
   executions_amount   INT64,
