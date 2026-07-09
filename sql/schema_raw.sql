@@ -97,33 +97,6 @@ CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.raw_answer_texts`
   etl_loaded_at  TIMESTAMP
 );
 
-
-
--- ------------------------------------------------------------
--- raw_report_topic_brand
--- Zdroj: POST /v1/metrics/report s filters.topicId per každý topic
--- Jeden řádek per brand (vlastní i competitor) per topic per snapshot_date per owning_brand per ETL run.
--- Nahrazuje raw_report_topic — obsahuje i competitors, nejen vlastní brand.
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.raw_report_topic_brand`
-(
-  owning_brand_id  STRING,     -- brand jehož monitoring volání provedlo
-  topic_id         STRING,
-  topic_name       STRING,
-  snapshot_date    TIMESTAMP,  -- timestamp snapshotu z API
-  brand_name       STRING,     -- vlastní brand nebo competitor
-  is_own_brand     BOOL,
-  visibility_score FLOAT64,
-  sentiment        FLOAT64,
-  avg_position     FLOAT64,
-  detection_rate   FLOAT64,
-  top3             FLOAT64,
-  mentions         INT64,
-  citations        INT64,
-  etl_loaded_at    TIMESTAMP
-);
-
-
 -- ------------------------------------------------------------
 -- raw_citations
 -- Zdroj: POST /v1/metrics/citations → domainSummary.topDomainsByQuery

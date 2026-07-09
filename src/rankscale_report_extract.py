@@ -112,6 +112,27 @@ def fetch_topics(brand_id: str) -> list[dict]:
     return active
 
 
+def fetch_topic_tags(brand_id: str) -> dict[str, str]:
+    """Vrátí mapping topic_id → JSON string unikátních tagů napříč search termy daného topicu."""
+    data = api_get("/v1/metrics/search-terms", {"brandId": brand_id, "limit": 5000})
+    terms = data["data"]["searchTerms"]
+
+    topic_tags: dict[str, set] = {}
+    for term in terms:
+        topic_ref = term.get("searchTermTopicRef") or {}
+        tid = topic_ref.get("id")
+        if not tid:
+            continue
+        raw_tags = term.get("tags") or []
+        if isinstance(raw_tags, str):
+            try:
+                raw_tags = json.loads(raw_tags)
+            except Exception:
+                raw_tags = []
+        topic_tags.setdefault(tid, set()).update(raw_tags)
+
+    return {tid: json.dumps(sorted(tags), ensure_ascii=False) for tid, tags in topic_tags.items()}
+
 
 def extract_report_by_topic(
     client: bigquery.Client,
@@ -119,6 +140,7 @@ def extract_report_by_topic(
     brand_name: str,
     topic_id: str,
     topic_name: str,
+    topic_tags_json: str,
     iso_start: str,
     iso_end: str,
 ) -> None:
@@ -147,6 +169,7 @@ def extract_report_by_topic(
                 "owning_brand_id":  brand_id,
                 "topic_id":         topic_id,
                 "topic_name":       topic_name,
+                "tags":             topic_tags_json,
                 "snapshot_date":    ts,
                 "brand_name":       b_name,
                 "is_own_brand":     is_own,
@@ -202,12 +225,14 @@ def main() -> None:
         brand_id   = brand["id"]
         brand_name = brand["name"]
         try:
-            topics = fetch_topics(brand_id)
+            topics   = fetch_topics(brand_id)
+            tag_map  = fetch_topic_tags(brand_id)
             for topic in topics:
                 try:
                     extract_report_by_topic(
                         client, brand_id, brand_name,
                         topic["id"], topic["name"],
+                        tag_map.get(topic["id"], "[]"),
                         iso_start, iso_end,
                     )
                 except Exception as e:

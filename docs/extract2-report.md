@@ -43,12 +43,16 @@ Vrátí seznam vlastních brandů. `brand_id` a `brand_name` použijeme pro dal�
 
 ---
 
-### Krok 2 — Seznam topiců (per brand)
+### Krok 2 — Seznam topiců + tagy (per brand)
 ```
 GET /v1/metrics/topics?brandRef=brand_id
+GET /v1/metrics/search-terms?brandId=brand_id&limit=5000
 ```
-Vrátí konfiguraci topiců. Přeskočíme topicy bez přiřazených search termů (prázdné `searchTermIds`).
-**Neukládá se** — slouží jen jako číselník topic_id pro krok 4.
+Dvě volání, obě se neukládají přímo — slouží jako příprava pro krok 3.
+
+**Topics** vrátí seznam aktivních topiců s jejich `searchTermIds`. Topicy bez search termů se přeskočí.
+
+**Search-terms** vrátí všechny prompty včetně jejich tagů. Script sestaví mapping `topic_id → [unikátní tagy]` agregací tagů přes všechny search termy daného topicu. Tento mapping se předá do kroku 3 a uloží jako `tags` sloupec.
 
 **Ukázka response (zkráceno):**
 ```json
@@ -117,11 +121,11 @@ E5GAVmqco65u7Smx3hso | Brand      | 2026-06-09    | Air Bank         | FALSE    
 
 ```
 brands (1×)
-  └── topics (1× per brand)
+  └── topics + search-terms (2× per brand)
         └── report per topic (N× per brand)   → raw_report_topic_brand
 ```
 
-Příklad: 3 brandy, každý má 5 aktivních topiců = **18 API volání celkem**
+Příklad: 3 brandy, každý má 5 aktivních topiců = **21 API volání celkem** (3 + 3×2 + 3×5)
 
 ---
 
@@ -129,12 +133,22 @@ Příklad: 3 brandy, každý má 5 aktivních topiců = **18 API volání celkem
 
 ### raw_report_topic_brand
 
-
-
 | Sloupec | Popis |
 |---|---|
+| `owning_brand_id` | Brand jehož monitoring volání provedlo |
 | `topic_id` | ID topicu |
 | `topic_name` | Název topicu (Brand, Hypotéky, Půjčky/Úvěry...) |
+| `tags` | JSON string unikátních tagů topicu, např. `'["product-brand","top-funnel"]'` |
+| `snapshot_date` | Timestamp týdne (z API parallel array) |
+| `brand_name` | Vlastní brand nebo competitor |
+| `is_own_brand` | TRUE = vlastní brand |
+| `visibility_score` | 0–100 |
+| `sentiment` | 0–100 |
+| `avg_position` | Průměrná pozice v AI odpovědi |
+| `detection_rate` | % snapshotů kde byl brand detekován |
+| `top3` | % výskytů na pozici 1–3 |
+| `mentions` | Počet zmínek |
+| `citations` | Počet citovaných URL |
 
 ---
 
