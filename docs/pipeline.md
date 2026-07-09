@@ -9,36 +9,38 @@ Celý tok dat od Rankscale API až do BI nástroje.
 ```
 Rankscale API
      │
-     │  každý den 6:30 UTC  (GitHub Actions: extract.yml)
-     ▼
-┌──────────────────────────────────────────────────────┐
-│  rankscale_extract.py                                │
-│  Stáhni data z API a ulož 1:1 do BigQuery            │
-└──────────────────────────────────────────────────────┘
+     ├── 6:30 UTC (extract.yml)          ├── 7:00 UTC (extract_report.yml)
+     ▼                                   ▼
+┌─────────────────────────┐   ┌─────────────────────────────────┐
+│  rankscale_extract.py   │   │  rankscale_report_extract.py    │
+│  Per-prompt granularita │   │  Brand-level agregát per topic  │
+└─────────────────────────┘   └─────────────────────────────────┘
+     │                                   │
+     ▼                                   ▼
+raw_ tabulky                        raw_report_ tabulky
+  raw_brands                          raw_report_topic_brand
+  raw_search_terms
+  raw_brand_snapshots
+  raw_answer_texts
+  raw_citations
      │
+     │  transform_l1.sql
      ▼
-raw_ tabulky (BigQuery)
-  raw_brands, raw_search_terms, raw_brand_snapshots,
-  raw_answer_texts, raw_citations
-  → každý den se přidají nové řádky (APPEND), nic se nesmaže
+L1_ tabulky
+  L1_dim_brands, L1_dim_search_terms
+  L1_fact_snapshots, L1_fact_citations, L1_fact_answer_texts
      │
-     │  transform_l1.sql  (spustit ručně nebo Keboola)
+     │  transform_l2.sql
      ▼
-L1_ tabulky (BigQuery)
-  L1_dim_brands, L1_dim_search_terms, L1_fact_snapshots,
-  L1_fact_citations, L1_fact_answer_texts
-  → deduplikovaná data, business logika (is_active, ai_share_of_voice)
-     │
-     │  transform_l2.sql  (spustit ručně nebo Keboola)
-     ▼
-L2_ tabulky (BigQuery)
+L2_ tabulky
   L2_snapshots, L2_search_term_tags,
   L2_citations, L2_answer_texts
-  → vše předjoinované, připraveno pro BI bez dalších transformací
      │
      ▼
 Tableau / Looker Studio / Power BI
 ```
+
+> Detailní popis Extract 2 (report extract): `docs/extract2-report.md`
 
 ---
 
@@ -300,12 +302,15 @@ L2_answer_texts         ─┘
 
 | Soubor | Co dělá |
 |---|---|
-| `src/rankscale_extract.py` | Krok 1 — stahuje data z API |
-| `.github/workflows/extract.yml` | Automatické spouštění kroku 1 (6:30 UTC) |
-| `sql/schema_raw.sql` | DDL pro raw_ tabulky (spustit jednorázově) |
+| `src/rankscale_extract.py` | Extract 1 — per-prompt data z API |
+| `src/rankscale_report_extract.py` | Extract 2 — brand-level agregát per topic |
+| `.github/workflows/extract.yml` | Automatické spouštění Extract 1 (6:30 UTC) |
+| `.github/workflows/extract_report.yml` | Automatické spouštění Extract 2 (7:00 UTC) |
+| `sql/schema_raw.sql` | DDL pro raw_ a raw_report_ tabulky (spustit jednorázově) |
 | `sql/schema_l1.sql` | DDL pro L1_ tabulky (spustit jednorázově) |
 | `sql/transform_l1.sql` | Krok 2 — vytvoří L1_ tabulky z raw_ |
 | `sql/transform_l2.sql` | Krok 3 — vytvoří L2_ tabulky z L1_ |
+| `docs/extract2-report.md` | Popis průběhu Extract 2 |
 
 ---
 

@@ -1,10 +1,9 @@
 """
 Rankscale → BigQuery  |  Report Extract  (L0 vrstva)
 Stahuje agregovaná data z /v1/metrics/report a ukládá je do:
-  - raw_report_brand: timeline vlastního brandu + všech competitors
-  - raw_report_topic: timeline vlastního brandu per topic
+  - raw_report_topic_brand: timeline vlastního brandu + competitors per topic
 
-Jeden API call per brand vrátí timeline všech týdnů.
+Jeden API call per topic per brand vrátí timeline všech týdnů.
 API samo určuje které týdny mají data — žádná iterace přes týdny.
 
 Rozdíl oproti rankscale_extract.py:
@@ -113,76 +112,6 @@ def fetch_topics(brand_id: str) -> list[dict]:
     return active
 
 
-def _parallel_to_rows(brand_id: str, brand_name: str, is_own_brand: bool, timestamps: list, metrics: dict) -> list[dict]:
-    """Rozbalí parallel arrays (timestamps + metriky) do řádků."""
-    rows = []
-    for i, ts in enumerate(timestamps):
-        rows.append({
-            "owning_brand_id":  brand_id,
-            "snapshot_date":    ts,
-            "brand_name":       brand_name,
-            "is_own_brand":     is_own_brand,
-            "visibility_score": metrics.get("visibilityScore", [None])[i] if i < len(metrics.get("visibilityScore", [])) else None,
-            "sentiment":        metrics.get("sentiment", [None])[i] if i < len(metrics.get("sentiment", [])) else None,
-            "avg_position":     metrics.get("avgPosition", [None])[i] if i < len(metrics.get("avgPosition", [])) else None,
-            "detection_rate":   metrics.get("detectionRate", [None])[i] if i < len(metrics.get("detectionRate", [])) else None,
-            "top3":             metrics.get("top3", [None])[i] if i < len(metrics.get("top3", [])) else None,
-            "mentions":         metrics.get("mentions", [None])[i] if i < len(metrics.get("mentions", [])) else None,
-            "citations":        metrics.get("citations", [None])[i] if i < len(metrics.get("citations", [])) else None,
-        })
-    return rows
-
-
-def extract_report(client: bigquery.Client, brand_id: str, brand_name: str, iso_start: str, iso_end: str) -> None:
-    log.info(f"── report  (brand={brand_id}, {iso_start} → {iso_end})")
-
-    data = api_post("/v1/metrics/report", {
-        "brandId":        brand_id,
-        "isoStartDate":   iso_start,
-        "isoEndDate":     iso_end,
-        "aggregation":    "weekly",
-        "selectedTopic":  "all",
-        "selectedTags":   "all",
-        "selectedEngine": "all",
-        "selectedQuery":  "all",
-    })
-
-    d = data["data"]
-    rows = []
-
-    # Vlastní brand — z ownBrandMetrics.historicalData
-    own = d.get("ownBrandMetrics", {})
-    hist = own.get("historicalData", {})
-    # Preferujeme weekly, fallback na daily (API vrací data dle frekvence snapshotů)
-    period_data = hist.get("weekly") or hist.get("daily") or {}
-    timestamps = period_data.get("timestamps", [])
-
-    if timestamps:
-        own_metrics = {k: v for k, v in period_data.items() if k != "timestamps" and k != "brandNotFound"}
-        rows.extend(_parallel_to_rows(brand_id, own.get("name", brand_name), True, timestamps, own_metrics))
-        log.info(f"    own brand: {len(timestamps)} týdnů")
-    else:
-        log.info("    own brand: žádná historická data")
-
-    # Competitors — z competitorTimeSeriesData
-    comp_ts_data = d.get("competitorTimeSeriesData", {})
-    comp_period = comp_ts_data.get("weekly") or comp_ts_data.get("daily") or {}
-    comp_timestamps = comp_period.get("timestamps", [])
-    competitors = comp_period.get("competitors", [])
-
-    for comp in competitors:
-        if comp_timestamps:
-            rows.extend(_parallel_to_rows(
-                brand_id,
-                comp.get("name"),
-                comp.get("isOwnBrand", False),
-                comp_timestamps,
-                comp.get("metrics", {}),
-            ))
-
-    log.info(f"    competitors: {len(competitors)}, celkem řádků: {len(rows)}")
-    bq_append(client, tbl("report_brand"), rows)
-
 
 def extract_report_by_topic(
     client: bigquery.Client,
@@ -273,8 +202,6 @@ def main() -> None:
         brand_id   = brand["id"]
         brand_name = brand["name"]
         try:
-            extract_report(client, brand_id, brand_name, iso_start, iso_end)
-
             topics = fetch_topics(brand_id)
             for topic in topics:
                 try:

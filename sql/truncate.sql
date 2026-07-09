@@ -24,3 +24,5 @@ TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.L2_snapshots`;
 
 TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.raw_report_brand`;
 TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.raw_report_topic`;
+
+TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.raw_report_topic_brand`;
