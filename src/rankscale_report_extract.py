@@ -126,7 +126,7 @@ def extract_report_by_topic(
         "brandId":        brand_id,
         "isoStartDate":   iso_start,
         "isoEndDate":     iso_end,
-        "aggregation":    "weekly",
+        "aggregation":    "daily",
         "filters":        {"topicId": topic_id},
         "selectedEngine": "all",
         "selectedQuery":  "all",
@@ -184,8 +184,8 @@ def main() -> None:
         iso_start = BACKFILL_START
         mode = f"BACKFILL od {iso_start}"
     else:
-        iso_start = (today - timedelta(days=90)).isoformat()
-        mode = "denní run (posledních 90 dní)"
+        iso_start = (today - timedelta(days=1)).isoformat()
+        mode = "denní run (včerejšek → dnes)"
 
     iso_end = today.isoformat()
 
