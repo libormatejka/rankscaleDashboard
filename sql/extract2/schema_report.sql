@@ -4,7 +4,7 @@
 -- Dataset:  RankScaleDashboard
 -- ============================================================
 -- Spustit jednorázově před prvním extractem.
--- Tabulky plní: src/rankscale_report_extract.py (raw)
+-- Tabulky plní: src/rankscale_report_extract.py (L0)
 --               sql/extract2/transform_report.sql (L1, L2)
 -- ============================================================
 
@@ -19,7 +19,6 @@ CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.L0_report_table`
   owning_brand_id  STRING,
   topic_id         STRING,
   topic_name       STRING,
-  tags             STRING,     -- JSON string unikátních tagů topicu, např. '["product-brand","top-funnel"]'
   snapshot_date    TIMESTAMP,
   brand_name       STRING,
   is_own_brand     BOOL,
@@ -43,7 +42,6 @@ CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.L1_report_topic_b
   owning_brand_id  STRING,
   topic_id         STRING,
   topic_name       STRING,
-  tags             STRING,
   snapshot_date    TIMESTAMP,
   brand_name       STRING,
   is_own_brand     BOOL,
@@ -61,15 +59,13 @@ CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.L1_report_topic_b
 -- ------------------------------------------------------------
 -- L2_report_topic_brand  (L2 — full refresh po každém extractu)
 -- Grain: brand × topic × snapshot_date
--- Přidává snapshot_week pro BI; tags jako JSON string
--- Pro filtr podle tagu použij L2_report_topic_tags
+-- Přidává snapshot_week pro BI
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.L2_report_topic_brand`
 (
   owning_brand_id  STRING,
   topic_id         STRING,
   topic_name       STRING,
-  tags             STRING,
   snapshot_date    DATE,
   snapshot_week    STRING,     -- ISO týden, např. '2026-28'
   brand_name       STRING,
@@ -82,18 +78,4 @@ CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.L2_report_topic_b
   mentions         INT64,
   citations        INT64,
   etl_loaded_at    TIMESTAMP
-);
-
-
--- ------------------------------------------------------------
--- L2_report_topic_tags  (L2 — full refresh po každém extractu)
--- Grain: owning_brand_id × topic_id × tag (bridge tabulka)
--- Použij pro JOIN + filtr podle tagu v BI
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.L2_report_topic_tags`
-(
-  owning_brand_id  STRING,
-  topic_id         STRING,
-  topic_name       STRING,
-  tag              STRING
 );
