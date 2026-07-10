@@ -126,7 +126,7 @@ def extract_report_by_topic(
         "brandId":        brand_id,
         "isoStartDate":   iso_start,
         "isoEndDate":     iso_end,
-        "aggregation":    "weekly",
+        "aggregation":    "daily",
         "filters":        {"topicId": topic_id},
         "selectedEngine": "all",
         "selectedQuery":  "all",
@@ -163,6 +163,7 @@ def extract_report_by_topic(
     own = d.get("ownBrandMetrics", {})
     hist = own.get("historicalData", {})
     period_data = hist.get("weekly") or hist.get("daily") or {}
+    log.info(f"    DEBUG own timestamps count: {len(period_data.get('timestamps', []))}")
     rows.extend(parse_period(period_data, own.get("name", brand_name), True))
 
     # Competitors
