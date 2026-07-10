@@ -156,7 +156,8 @@ def extract_report_by_tag(
         "isoStartDate":   iso_start,
         "isoEndDate":     iso_end,
         "aggregation":    "weekly",
-        "filters":        {"tags": [tag], "topicId": topic_id},
+        "selectedTopic":  topic_id,
+        "selectedTags":   tag,
         "selectedEngine": "all",
         "selectedQuery":  "all",
     })
