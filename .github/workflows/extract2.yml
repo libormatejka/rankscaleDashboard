@@ -7,7 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       backfill_start:
-        description: "Backfill: datum od kdy stáhnout (YYYY-MM-DD, např. 2026-02-01). Prázdné = posledních 90 dní."
+        description: "Od kdy stáhnout (YYYY-MM-DD, např. 2026-01-01). Prázdné = automatický denní run."
+        required: false
+        default: ""
+      backfill_end:
+        description: "Do kdy stáhnout (YYYY-MM-DD, např. 2026-03-31). Prázdné = dnes."
         required: false
         default: ""
 
@@ -37,6 +41,7 @@ jobs:
           BQ_DATASET:        ${{ secrets.BQ_DATASET }}
           GCP_SA_JSON:       ${{ secrets.GCP_SA_JSON }}
           BACKFILL_START:    ${{ github.event.inputs.backfill_start }}
+          BACKFILL_END:      ${{ github.event.inputs.backfill_end }}
         run: python src/rankscale_report_extract.py
 
       - name: Oznámení při selhání

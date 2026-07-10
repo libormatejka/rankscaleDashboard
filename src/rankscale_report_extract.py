@@ -32,6 +32,7 @@ API_KEY        = os.environ["RANKSCALE_API_KEY"]
 GCP_PROJECT    = os.environ["GCP_PROJECT"]
 BQ_DATASET     = os.environ["BQ_DATASET"]
 BACKFILL_START = os.environ.get("BACKFILL_START")  # YYYY-MM-DD, prázdné = denní run
+BACKFILL_END   = os.environ.get("BACKFILL_END")    # YYYY-MM-DD, prázdné = dnes
 
 NOW = datetime.now(timezone.utc).isoformat()
 
@@ -189,12 +190,12 @@ def main() -> None:
 
     if BACKFILL_START:
         iso_start = BACKFILL_START
-        mode = f"BACKFILL od {iso_start}"
+        iso_end   = BACKFILL_END if BACKFILL_END else today.isoformat()
+        mode = f"BACKFILL {iso_start} → {iso_end}"
     else:
         iso_start = (today - timedelta(days=7)).isoformat()
+        iso_end   = today.isoformat()
         mode = "denní run (posledních 7 dní — zachytí aktuální týdenní snapshot)"
-
-    iso_end = today.isoformat()
 
     log.info("╔══════════════════════════════════════════╗")
     log.info(f"║  Rankscale Report Extract  [{mode}]")
