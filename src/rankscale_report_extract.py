@@ -126,7 +126,7 @@ def extract_report_by_topic(
         "brandId":        brand_id,
         "isoStartDate":   iso_start,
         "isoEndDate":     iso_end,
-        "aggregation":    "daily",
+        "aggregation":    "weekly",
         "filters":        {"topicId": topic_id},
         "selectedEngine": "all",
         "selectedQuery":  "all",
