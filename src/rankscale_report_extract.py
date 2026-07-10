@@ -184,6 +184,30 @@ def extract_report_by_topic(
 
     bq_append(client, tbl("L0_report_table"), rows)
 
+    # Engine breakdown (pouze vlastní brand)
+    engine_rows = []
+    own_name = own.get("name", brand_name)
+    for engine in d.get("ownBrandMetrics", {}).get("engineMetricsData", {}).get("weekly", []):
+        engine_id = engine.get("engineId") or engine.get("engineName")
+        timestamps = engine.get("timestamps", [])
+        for i, ts in enumerate(timestamps):
+            engine_rows.append({
+                "owning_brand_id":  brand_id,
+                "topic_id":         topic_id,
+                "topic_name":       topic_name,
+                "engine_id":        engine_id,
+                "snapshot_date":    ts,
+                "brand_name":       own_name,
+                "visibility_score": safe_get(engine.get("visibilityScore", []), i),
+                "sentiment":        safe_get(engine.get("sentiment", []), i),
+                "avg_position":     safe_get(engine.get("avgPosition", []), i),
+                "detection_rate":   safe_get(engine.get("detectionRate", []), i),
+                "top3":             safe_get(engine.get("top3", []), i),
+                "mentions":         safe_get(engine.get("mentions", []), i),
+                "citations":        safe_get(engine.get("citations", []), i),
+            })
+    bq_append(client, tbl("L0_report_engine"), engine_rows)
+
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main() -> None:
