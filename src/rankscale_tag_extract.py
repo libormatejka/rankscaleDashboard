@@ -102,21 +102,41 @@ def extract_brands() -> list[dict]:
     return brands
 
 
-def fetch_tags(brand_id: str) -> list[str]:
-    """Vrátí seznam unikátních tagů přes všechny search termy daného brandu."""
-    data = api_get("/v1/metrics/search-terms", {"brandId": brand_id, "limit": 5000})
-    terms = data["data"]["searchTerms"]
-    tags: set[str] = set()
+def fetch_tag_topic_combinations(brand_id: str) -> list[tuple[str, str, str]]:
+    """Vrátí unikátní kombinace (tag, topic_id, topic_name) pro daný brand.
+
+    Logika:
+      1. Stáhne topics → mapping searchTermId → (topic_id, topic_name)
+      2. Stáhne search terms → každý term má tagy
+      3. Zkříží: term → jeho tagy × jeho topic
+    """
+    # 1. Topics
+    topics_data = api_get("/v1/metrics/topics", {"brandRef": brand_id})
+    term_to_topic: dict[str, tuple[str, str]] = {}
+    for t in topics_data["data"]["topics"]:
+        for sid in (t.get("searchTermIds") or []):
+            term_to_topic[sid] = (t["id"], t["name"])
+
+    # 2. Search terms
+    terms_data = api_get("/v1/metrics/search-terms", {"brandId": brand_id, "limit": 5000})
+    terms = terms_data["data"]["searchTerms"]
+
+    combinations: set[tuple[str, str, str]] = set()
     for term in terms:
+        topic_info = term_to_topic.get(term.get("id") or term.get("searchTermId", ""))
+        if not topic_info:
+            continue
         raw = term.get("tags") or []
         if isinstance(raw, str):
             try:
                 raw = json.loads(raw)
             except Exception:
                 raw = []
-        tags.update(raw)
-    result = sorted(tags)
-    log.info(f"    tagy: {len(result)} unikátních → {result}")
+        for tag in raw:
+            combinations.add((tag, topic_info[0], topic_info[1]))
+
+    result = sorted(combinations)
+    log.info(f"    tag×topic kombinace: {len(result)}")
     return result
 
 
@@ -125,16 +145,18 @@ def extract_report_by_tag(
     brand_id: str,
     brand_name: str,
     tag: str,
+    topic_id: str,
+    topic_name: str,
     iso_start: str,
     iso_end: str,
 ) -> None:
-    log.info(f"    tag '{tag}'")
+    log.info(f"    tag '{tag}' / topic '{topic_name}'")
     data = api_post("/v1/metrics/report", {
         "brandId":        brand_id,
         "isoStartDate":   iso_start,
         "isoEndDate":     iso_end,
         "aggregation":    "weekly",
-        "filters":        {"tags": [tag]},
+        "filters":        {"tags": [tag], "topicId": topic_id},
         "selectedEngine": "all",
         "selectedQuery":  "all",
     })
@@ -159,6 +181,8 @@ def extract_report_by_tag(
             out.append({
                 "owning_brand_id":  brand_id,
                 "tag":              tag,
+                "topic_id":         topic_id,
+                "topic_name":       topic_name,
                 "snapshot_date":    ts,
                 "brand_name":       b_name,
                 "is_own_brand":     is_own,
@@ -213,15 +237,16 @@ def main() -> None:
         brand_id   = brand["id"]
         brand_name = brand["name"]
         try:
-            tags = fetch_tags(brand_id)
-            for tag in tags:
+            combinations = fetch_tag_topic_combinations(brand_id)
+            for tag, topic_id, topic_name in combinations:
                 try:
                     extract_report_by_tag(
                         client, brand_id, brand_name,
-                        tag, iso_start, iso_end,
+                        tag, topic_id, topic_name,
+                        iso_start, iso_end,
                     )
                 except Exception as e:
-                    log.error(f"  Tag '{tag}' selhal: {e}")
+                    log.error(f"  Tag '{tag}' / topic '{topic_id}' selhal: {e}")
 
         except Exception as e:
             log.error(f"Brand {brand_id} selhal: {e}")

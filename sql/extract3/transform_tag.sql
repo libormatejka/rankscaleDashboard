@@ -21,7 +21,7 @@ FROM (
   SELECT
     *,
     ROW_NUMBER() OVER (
-      PARTITION BY owning_brand_id, tag, brand_name, snapshot_date
+      PARTITION BY owning_brand_id, tag, topic_id, brand_name, snapshot_date
       ORDER BY etl_loaded_at DESC
     ) AS rn
   FROM `libor-matejkacz.RankScaleDashboard.L0_tag_table`
@@ -38,6 +38,8 @@ INSERT INTO `libor-matejkacz.RankScaleDashboard.L2_tag_brand`
 SELECT
   owning_brand_id,
   tag,
+  topic_id,
+  topic_name,
   DATE(snapshot_date)                        AS snapshot_date,
   FORMAT_DATE('%G-%V', DATE(snapshot_date))  AS snapshot_week,
   brand_name,

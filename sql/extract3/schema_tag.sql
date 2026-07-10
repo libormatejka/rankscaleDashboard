@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.L0_tag_table`
 (
   owning_brand_id  STRING,
   tag              STRING,
+  topic_id         STRING,
+  topic_name       STRING,
   snapshot_date    TIMESTAMP,
   brand_name       STRING,
   is_own_brand     BOOL,
@@ -40,6 +42,8 @@ CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.L1_tag_brand`
 (
   owning_brand_id  STRING,
   tag              STRING,
+  topic_id         STRING,
+  topic_name       STRING,
   snapshot_date    TIMESTAMP,
   brand_name       STRING,
   is_own_brand     BOOL,
@@ -63,6 +67,8 @@ CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.L2_tag_brand`
 (
   owning_brand_id  STRING,
   tag              STRING,
+  topic_id         STRING,
+  topic_name       STRING,
   snapshot_date    DATE,
   snapshot_week    STRING,     -- ISO týden, např. '2026-28'
   brand_name       STRING,
