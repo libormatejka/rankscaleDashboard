@@ -126,7 +126,7 @@ def extract_report_by_topic(
         "brandId":        brand_id,
         "isoStartDate":   iso_start,
         "isoEndDate":     iso_end,
-        "aggregation":    "daily",
+        "aggregation":    "weekly",
         "filters":        {"topicId": topic_id},
         "selectedEngine": "all",
         "selectedQuery":  "all",
@@ -162,13 +162,19 @@ def extract_report_by_topic(
     # Vlastní brand
     own = d.get("ownBrandMetrics", {})
     hist = own.get("historicalData", {})
-    period_data = hist.get("weekly") or hist.get("daily") or {}
-    log.info(f"    DEBUG own timestamps count: {len(period_data.get('timestamps', []))}")
+    def pick_period(container: dict) -> dict:
+        for key in ("weekly", "daily", "monthly", "hourly"):
+            p = container.get(key, {})
+            if p.get("timestamps"):
+                return p
+        return {}
+
+    period_data = pick_period(hist)
     rows.extend(parse_period(period_data, own.get("name", brand_name), True))
 
     # Competitors
     comp_ts = d.get("competitorTimeSeriesData", {})
-    comp_period = comp_ts.get("weekly") or comp_ts.get("daily") or {}
+    comp_period = pick_period(comp_ts)
     for comp in comp_period.get("competitors", []):
         metrics = comp.get("metrics", {})
         metrics["timestamps"] = comp_period.get("timestamps", [])
@@ -186,7 +192,7 @@ def main() -> None:
         mode = f"BACKFILL od {iso_start}"
     else:
         iso_start = (today - timedelta(days=7)).isoformat()
-        mode = "denní run (posledních 7 dní)"
+        mode = "denní run (posledních 7 dní — zachytí aktuální týdenní snapshot)"
 
     iso_end = today.isoformat()
 
