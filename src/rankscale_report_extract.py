@@ -1,7 +1,7 @@
 """
 Rankscale → BigQuery  |  Report Extract  (L0 vrstva)
 Stahuje agregovaná data z /v1/metrics/report a ukládá je do:
-  - raw_report_topic_brand: timeline vlastního brandu + competitors per topic
+  - L0_report_table: timeline vlastního brandu + competitors per topic
 
 Jeden API call per topic per brand vrátí timeline všech týdnů.
 API samo určuje které týdny mají data — žádná iterace přes týdny.

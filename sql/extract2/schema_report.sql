@@ -10,11 +10,11 @@
 
 
 -- ------------------------------------------------------------
--- raw_report_topic_brand  (L0 — APPEND každý ETL run)
+-- L0_report_table  (L0 — APPEND každý ETL run)
 -- Zdroj: POST /v1/metrics/report s filters.topicId per každý topic
 -- Grain: brand × topic × snapshot_date × ETL run
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.raw_report_topic_brand`
+CREATE TABLE IF NOT EXISTS `libor-matejkacz.RankScaleDashboard.L0_report_table`
 (
   owning_brand_id  STRING,
   topic_id         STRING,

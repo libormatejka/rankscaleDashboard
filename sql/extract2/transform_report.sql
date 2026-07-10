@@ -5,7 +5,7 @@
 -- ============================================================
 -- Spouštět manuálně po dokončení report extractu.
 -- Předpoklad: tabulky existují (viz schema_report.sql).
--- Pořadí: L1 → L2_brand → L2_tags (každý krok závisí na předchozím)
+-- Pořadí: L1 → L2_brand → L2_tags → V_report (každý krok závisí na předchozím)
 -- ============================================================
 
 
@@ -24,7 +24,7 @@ FROM (
       PARTITION BY owning_brand_id, topic_id, brand_name, snapshot_date
       ORDER BY etl_loaded_at DESC
     ) AS rn
-  FROM `libor-matejkacz.RankScaleDashboard.raw_report_topic_brand`
+  FROM `libor-matejkacz.RankScaleDashboard.L0_report_table`
 )
 WHERE rn = 1;
 
@@ -74,3 +74,32 @@ FROM `libor-matejkacz.RankScaleDashboard.L2_report_topic_brand`,
   UNNEST(JSON_VALUE_ARRAY(tags)) AS tag
 WHERE tags IS NOT NULL
   AND tags NOT IN ('[]', 'null', '');
+
+
+-- ── 4. V_report_topic_brand ──────────────────────────────────────────────────
+-- VIEW pro Looker Studio a Tableau — jeden zdroj dat, vše předjoinované.
+-- Grain: owning_brand_id × topic_id × brand_name × snapshot_date × tag
+-- POZOR: metriky se opakují per tag — v BI vždy filtruj na jeden tag
+--        nebo agreguj přes MAX(), nikdy SUM().
+
+CREATE OR REPLACE VIEW `libor-matejkacz.RankScaleDashboard.V_report_topic_brand` AS
+SELECT
+  r.owning_brand_id,
+  r.topic_id,
+  r.topic_name,
+  r.snapshot_date,
+  r.snapshot_week,
+  r.brand_name,
+  r.is_own_brand,
+  r.visibility_score,
+  r.sentiment,
+  r.avg_position,
+  r.detection_rate,
+  r.top3,
+  r.mentions,
+  r.citations,
+  COALESCE(t.tag, 'bez tagu') AS tag
+FROM `libor-matejkacz.RankScaleDashboard.L2_report_topic_brand` r
+LEFT JOIN `libor-matejkacz.RankScaleDashboard.L2_report_topic_tags` t
+  ON  t.owning_brand_id = r.owning_brand_id
+  AND t.topic_id        = r.topic_id;

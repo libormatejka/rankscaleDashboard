@@ -14,7 +14,7 @@ Paralelní extract k hlavnímu Extract 1. Stahuje agregovaná brand-level data z
 | Metriky per prompt | Extract 1 → `L1_fact_snapshots` |
 | Texty AI odpovědí | Extract 1 → `L1_fact_answer_texts` |
 | Citované weby | Extract 1 → `L1_fact_citations` |
-| Brand vs competitors per topic timeline | Extract 2 → `raw_report_topic_brand` |
+| Brand vs competitors per topic timeline | Extract 2 → `L0_report_table` |
 
 ---
 
@@ -103,7 +103,7 @@ Stejný endpoint jako krok 2, filtrovaný na konkrétní topic. Vrátí vlastní
 }
 ```
 
-**Jak se uloží do `raw_report_topic_brand`:**
+**Jak se uloží do `L0_report_table`:**
 ```
 owning_brand_id       | topic_name | snapshot_date | brand_name       | is_own_brand | visibility_score
 E5GAVmqco65u7Smx3hso | Brand      | 2026-06-02    | Česká spořitelna | TRUE         | 59.6
@@ -112,7 +112,7 @@ E5GAVmqco65u7Smx3hso | Brand      | 2026-06-02    | Air Bank         | FALSE    
 E5GAVmqco65u7Smx3hso | Brand      | 2026-06-09    | Air Bank         | FALSE        | 60.8
 ```
 
-**Uloží do:** `raw_report_topic_brand`
+**Uloží do:** `L0_report_table`
 - 1 řádek per brand (vlastní + každý competitor) per topic per týden
 
 ---
@@ -122,7 +122,7 @@ E5GAVmqco65u7Smx3hso | Brand      | 2026-06-09    | Air Bank         | FALSE    
 ```
 brands (1×)
   └── topics + search-terms (2× per brand)
-        └── report per topic (N× per brand)   → raw_report_topic_brand
+        └── report per topic (N× per brand)   → L0_report_table
 ```
 
 Příklad: 3 brandy, každý má 5 aktivních topiců = **21 API volání celkem** (3 + 3×2 + 3×5)
@@ -131,7 +131,7 @@ Příklad: 3 brandy, každý má 5 aktivních topiců = **21 API volání celkem
 
 ## Výstupní tabulky
 
-### raw_report_topic_brand
+### L0_report_table
 
 | Sloupec | Popis |
 |---|---|
@@ -162,10 +162,10 @@ SELECT
   is_own_brand,
   visibility_score,
   RANK() OVER (PARTITION BY topic_name ORDER BY visibility_score DESC) AS poradi
-FROM `libor-matejkacz.RankScaleDashboard.raw_report_topic_brand`
+FROM `libor-matejkacz.RankScaleDashboard.L0_report_table`
 WHERE DATE(snapshot_date) = (
     SELECT MAX(DATE(snapshot_date))
-    FROM `libor-matejkacz.RankScaleDashboard.raw_report_topic_brand`
+    FROM `libor-matejkacz.RankScaleDashboard.L0_report_table`
   )
   AND owning_brand_id = 'ZDE_BRAND_ID'
 ORDER BY topic_name, poradi;
@@ -179,7 +179,7 @@ SELECT
   visibility_score,
   sentiment,
   detection_rate
-FROM `libor-matejkacz.RankScaleDashboard.raw_report_topic_brand`
+FROM `libor-matejkacz.RankScaleDashboard.L0_report_table`
 WHERE owning_brand_id = 'ZDE_BRAND_ID'
   AND is_own_brand    = TRUE
 ORDER BY topic_name, tyden;

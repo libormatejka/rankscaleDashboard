@@ -22,4 +22,7 @@ TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.L2_citations`;
 TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.L2_search_term_tags`;
 TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.L2_snapshots`;
 
-TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.raw_report_topic_brand`;
+TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.L0_report_table`;
+TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.L1_report_topic_brand`;
+TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.L2_report_topic_brand`;
+TRUNCATE TABLE `libor-matejkacz.RankScaleDashboard.L2_report_topic_tags`;

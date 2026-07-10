@@ -18,7 +18,7 @@ Rankscale API
      │                                   │
      ▼                                   ▼
 raw_ tabulky                        raw_report_ tabulky
-  raw_brands                          raw_report_topic_brand
+  raw_brands                          L0_report_table
   raw_search_terms
   raw_brand_snapshots
   raw_answer_texts
