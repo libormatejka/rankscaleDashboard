@@ -135,11 +135,6 @@ def extract_report_by_topic(
     d = data["data"]
     rows = []
 
-    own_keys  = list(d.get("ownBrandMetrics", {}).get("historicalData", {}).keys())
-    comp_keys = list(d.get("competitorTimeSeriesData", {}).keys())
-    log.info(f"    DEBUG historicalData keys: {own_keys}")
-    log.info(f"    DEBUG competitorTimeSeriesData keys: {comp_keys}")
-
     def safe_get(arr: list, i: int):
         return arr[i] if i < len(arr) else None
 
@@ -168,7 +163,6 @@ def extract_report_by_topic(
     own = d.get("ownBrandMetrics", {})
     hist = own.get("historicalData", {})
     period_data = hist.get("weekly") or hist.get("daily") or {}
-    log.info(f"    DEBUG own timestamps count: {len(period_data.get('timestamps', []))}")
     rows.extend(parse_period(period_data, own.get("name", brand_name), True))
 
     # Competitors
