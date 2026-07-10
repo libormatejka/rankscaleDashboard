@@ -184,8 +184,8 @@ def main() -> None:
         iso_start = BACKFILL_START
         mode = f"BACKFILL od {iso_start}"
     else:
-        iso_start = (today - timedelta(days=1)).isoformat()
-        mode = "denní run (včerejšek → dnes)"
+        iso_start = (today - timedelta(days=7)).isoformat()
+        mode = "denní run (posledních 7 dní)"
 
     iso_end = today.isoformat()
 
