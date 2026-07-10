@@ -56,7 +56,7 @@ def make_client() -> bigquery.Client:
 
 
 def tbl(name: str) -> str:
-    return f"{GCP_PROJECT}.{BQ_DATASET}.raw_{name}"
+    return f"{GCP_PROJECT}.{BQ_DATASET}.{name}"
 
 
 def bq_append(client: bigquery.Client, table: str, rows: list[dict]) -> None:
@@ -173,7 +173,7 @@ def extract_report_by_topic(
         metrics["timestamps"] = comp_period.get("timestamps", [])
         rows.extend(parse_period(metrics, comp.get("name"), comp.get("isOwnBrand", False)))
 
-    bq_append(client, tbl("report_topic_brand"), rows)
+    bq_append(client, tbl("L0_report_table"), rows)
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
