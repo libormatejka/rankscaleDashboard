@@ -59,7 +59,7 @@ v celém návodu, kde nastavuješ hodnotu v souboru místo v příkazové řádc
 
 - Otevři [`env.yaml`](env.yaml) v této složce a uprav dva řádky:
   ```yaml
-  GCP_PROJECT: libor-matejkacz
+  GCP_PROJECT: rankscale
   BQ_DATASET: RankScaleDashboard
   ```
   Skript je čte jako `os.environ["GCP_PROJECT"]` / `os.environ["BQ_DATASET"]`
@@ -80,7 +80,7 @@ v celém návodu, kde nastavuješ hodnotu v souboru místo v příkazové řádc
 ## 1. Příprava GCP projektu
 
 ```bash
-export GCP_PROJECT=libor-matejkacz
+export GCP_PROJECT=rankscale
 export REGION=europe-west3          # nebo jiný region blízko tebe
 export REPO=rankscale
 export SA_NAME=rankscale-extract-job
@@ -123,6 +123,25 @@ gcloud secrets add-iam-policy-binding rankscale-api-key \
   --role="roles/secretmanager.secretAccessor"
 ```
 
+## 3b. BigQuery dataset a tabulky
+
+**Bez tohoto kroku job nemá kam zapisovat — spustí se, ale spadne na zápisu do BigQuery.**
+
+Skript (`bq_append`) očekává, že dataset a tabulky `raw_*` už existují — sám je nezakládá.
+Produkční pipeline (GitHub Actions) píše do `libor-matejkacz.RankScaleDashboard`
+(viz `../sql/extract1/schema_raw.sql`); tenhle GCP projekt (`rankscale`) je od ní oddělený,
+takže potřebuje **vlastní** dataset a tabulky:
+
+```bash
+bq --project_id=$GCP_PROJECT mk --dataset --location=EU ${GCP_PROJECT}:RankScaleDashboard
+
+bq query --project_id=$GCP_PROJECT --use_legacy_sql=false < schema_raw.sql
+```
+
+`schema_raw.sql` v této složce je kopie `../sql/extract1/schema_raw.sql` s tabulkami
+odkazujícími na projekt `rankscale` místo `libor-matejkacz`. Pokud `env.yaml` později
+přepneš na jiný `GCP_PROJECT`, uprav název projektu i v tomto SQL souboru a spusť ho znovu.
+
 ## 4. Build image a push do Artifact Registry
 
 Build se spouští **z této složky** (`GCP/`), aby `Dockerfile` a `COPY` cesty seděly:
@@ -144,7 +163,7 @@ Cílový projekt a dataset (`GCP_PROJECT`, `BQ_DATASET`) se **nepíšou do pří
 jsou v souboru [`env.yaml`](env.yaml) ve stejné složce. Otevři ho a uprav podle sebe:
 
 ```yaml
-GCP_PROJECT: libor-matejkacz
+GCP_PROJECT: rankscale
 BQ_DATASET: RankScaleDashboard
 ```
 
@@ -242,7 +261,7 @@ docker build -t rankscale-extract-local .
 
 docker run --rm \
   -e RANKSCALE_API_KEY=rk_tvuj_klic \
-  -e GCP_PROJECT=libor-matejkacz \
+  -e GCP_PROJECT=rankscale \
   -e BQ_DATASET=RankScaleDashboard \
   -v ~/.config/gcloud:/root/.config/gcloud:ro \
   rankscale-extract-local
