@@ -98,3 +98,15 @@ python src/rankscale_extract.py
 
 Script stahuje posledních `7d` dat (výchozí hodnota `TIME_FRAME`).
 Pro backfill historických dat spusť ručně z GitHub Actions a zvol `time_frame = 1y`.
+
+---
+
+## Alternativa: nasazení na GCP (Cloud Run Job + Cloud Scheduler)
+
+Pro případ, že nechceš záviset na GitHub Actions, existuje verze pro Cloud Run Job
+ve složce [`GCP/`](GCP/README.md) — stejná extract logika, ale autentizace k BigQuery
+jde přes service account přiřazený přímo k jobu (žádný `GCP_SA_JSON` secret) a
+spouští se z Cloud Scheduleru místo GitHub Actions cronu.
+
+Kompletní postup nasazení (příprava projektu, service account, Secret Manager,
+build image, Cloud Scheduler): viz **[GCP/README.md](GCP/README.md)**.
