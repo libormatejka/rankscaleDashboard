@@ -34,6 +34,49 @@ je 1:1 stejná — viz hlavní [README](../README.md) pro popis tabulek a datov�
 
 ---
 
+## Dva druhy proměnných — nepliť si je
+
+V krocích níže se objevují dva odlišné typy proměnných:
+
+| | Shell proměnné (`$GCP_PROJECT`, `$REGION`, `$REPO`, `$SA_NAME`) | Env proměnné kontejneru (`--set-env-vars`, `--set-secrets`) |
+|---|---|---|
+| **Kde se nastavují** | `export` v tvém terminálu (krok 1) | přímo v příkazu `gcloud run jobs create/update` |
+| **K čemu slouží** | jen jako zkratky pro `gcloud` příkazy, aby ses nemusel opakovat | proměnné, které **uvidí samotný Python skript** uvnitř kontejneru za běhu |
+| **Kdy zmizí** | při zavření terminálu / nové kartě Cloud Shellu / restartu session | jsou trvale uložené v definici Cloud Run Jobu, dokud job neupravíš znovu |
+
+**Než spustíš jakýkoliv příkaz s `$PROMĚNNOU`, over si ve stejném terminálu:**
+
+```bash
+echo $GCP_PROJECT $REGION $REPO $SA_NAME
+```
+
+Pokud je výstup prázdný, `export` řádky z kroku 1 spadly (nová session) — spusť je znovu.
+
+### Kam nastavit cílový GCP projekt a BigQuery dataset
+
+Toto je to hlavní, co určuje, **kam se data reálně zapisují** — a je to jediné místo
+v celém návodu, kde nastavuješ hodnotu v souboru místo v příkazové řádce:
+
+- Otevři [`env.yaml`](env.yaml) v této složce a uprav dva řádky:
+  ```yaml
+  GCP_PROJECT: libor-matejkacz
+  BQ_DATASET: RankScaleDashboard
+  ```
+  Skript je čte jako `os.environ["GCP_PROJECT"]` / `os.environ["BQ_DATASET"]`
+  (viz `rankscale_extract_gcp.py`, funkce `tbl()` — tabulky jsou `{GCP_PROJECT}.{BQ_DATASET}.raw_*`).
+- Při vytváření jobu (krok 5) se soubor předá přes `--env-vars-file=env.yaml` —
+  nic dalšího psát nemusíš.
+- Pokud chceš cíl **později změnit** (jiný projekt/dataset), stačí upravit `env.yaml`
+  a spustit:
+  ```bash
+  gcloud run jobs update rankscale-extract --region=$REGION --env-vars-file=env.yaml
+  ```
+- Service account jobu (`$SA_NAME`) musí mít `roles/bigquery.dataEditor` + `roles/bigquery.jobUser`
+  **v tom projektu, kam se zapisuje** (krok 2) — pokud v `env.yaml` přepneš `GCP_PROJECT`
+  na jiný projekt, potřebuješ IAM binding zopakovat i tam.
+
+---
+
 ## 1. Příprava GCP projektu
 
 ```bash
@@ -97,12 +140,22 @@ gcloud builds submit \
 
 ## 5. Vytvoření Cloud Run Job
 
+Cílový projekt a dataset (`GCP_PROJECT`, `BQ_DATASET`) se **nepíšou do příkazu ručně** —
+jsou v souboru [`env.yaml`](env.yaml) ve stejné složce. Otevři ho a uprav podle sebe:
+
+```yaml
+GCP_PROJECT: libor-matejkacz
+BQ_DATASET: RankScaleDashboard
+```
+
+Pak spusť (`--env-vars-file=env.yaml` soubor rovnou načte):
+
 ```bash
 gcloud run jobs create rankscale-extract \
   --image="${REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO}/rankscale-extract:latest" \
   --region=$REGION \
   --service-account="${SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com" \
-  --set-env-vars="GCP_PROJECT=${GCP_PROJECT},BQ_DATASET=RankScaleDashboard" \
+  --env-vars-file=env.yaml \
   --set-secrets="RANKSCALE_API_KEY=rankscale-api-key:latest" \
   --max-retries=1 \
   --task-timeout=1200
@@ -110,12 +163,17 @@ gcloud run jobs create rankscale-extract \
 
 Proměnné:
 
-| Env var | Hodnota |
+| Proměnná | Kde se nastavuje |
 |---|---|
-| `GCP_PROJECT` | ID GCP projektu |
-| `BQ_DATASET` | Dataset s `raw_*` tabulkami, např. `RankScaleDashboard` |
-| `RANKSCALE_API_KEY` | mountnutý ze Secret Manageru, ne plain env var |
-| `BACKFILL_WEEKS` | volitelné, jen pro backfill (viz níže) |
+| `GCP_PROJECT`, `BQ_DATASET` | v souboru `env.yaml` (uprav a ulož, žádný `gcloud` flag nepotřebuješ psát ručně) |
+| `RANKSCALE_API_KEY` | Secret Manager, mountnutý přes `--set-secrets` (krok 3) |
+| `BACKFILL_WEEKS` | volitelné, jen pro backfill, viz níže — nastavuje se zvlášť při konkrétním spuštění |
+
+Když později změníš `env.yaml` (jiný projekt/dataset), aplikuješ to na existující job příkazem:
+
+```bash
+gcloud run jobs update rankscale-extract --region=$REGION --env-vars-file=env.yaml
+```
 
 ### Ruční spuštění / test
 
