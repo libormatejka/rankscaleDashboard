@@ -79,8 +79,12 @@ v celém návodu, kde nastavuješ hodnotu v souboru místo v příkazové řádc
 
 ## 1. Příprava GCP projektu
 
+Projekt musí mít zapnuté **billing** (Cloud Build / Artifact Registry / Cloud Run
+bez něj nejdou zapnout) — over v Cloud Console **Billing**, že je k projektu
+připojený účet.
+
 ```bash
-export GCP_PROJECT=rankscale
+export GCP_PROJECT=rankscale         # skutečné project ID cílového projektu (ne "hezký" název)
 export REGION=europe-west3          # nebo jiný region blízko tebe
 export REPO=rankscale
 export SA_NAME=rankscale-extract-job
@@ -95,6 +99,17 @@ gcloud services enable \
   bigquery.googleapis.com \
   cloudbuild.googleapis.com
 ```
+
+**Ověř, že se aktivní projekt opravdu přepnul** — tohle je nejčastější zdroj problémů
+při přesunu na jiný projekt (service account nebo IAM binding pak nenápadně vzniknou
+ve starém projektu):
+
+```bash
+gcloud config get-value project
+```
+
+Musí to vypsat přesně hodnotu `$GCP_PROJECT`. Pokud ne, `export` proběhl ve starší
+kartě/session a tahle nová o něm neví — nastav `export GCP_PROJECT=...` znovu tady.
 
 ## 2. Service account pro job
 
@@ -113,24 +128,51 @@ gcloud projects add-iam-policy-binding $GCP_PROJECT \
   --role="roles/bigquery.jobUser"
 ```
 
+Ověř, že SA opravdu vznikl v `$GCP_PROJECT` (ne v jiném projektu, kde jsi `gcloud`
+používal dřív):
+
+```bash
+gcloud iam service-accounts describe "${SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com"
+```
+
+Pokud vrátí chybu "NOT_FOUND", SA vznikl jinde — zkontroluj `gcloud config get-value project`
+(viz krok 1) a založ ho znovu s aktivním správným projektem.
+
 ## 3. Rankscale API klíč do Secret Manageru
 
 ```bash
-printf "rk_tvuj_klic" | gcloud secrets create rankscale-api-key --data-file=-
+printf "%s" "rk_tvuj_skutecny_klic" | gcloud secrets create rankscale-api-key --data-file=-
 
 gcloud secrets add-iam-policy-binding rankscale-api-key \
   --member="serviceAccount:${SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com" \
   --role="roles/secretmanager.secretAccessor"
 ```
 
+**Nahraď `rk_tvuj_skutecny_klic` svým reálným Rankscale API klíčem** (Rankscale
+dashboard → Settings/API, klíč začíná `rk_`) — ne placeholderem z tohoto návodu.
+Ověř, že se uložil správně:
+
+```bash
+gcloud secrets versions access latest --secret=rankscale-api-key
+```
+
+Musí vypsat tvůj skutečný klíč. Pokud jsi secret omylem vytvořil s `echo` místo
+`printf` (přidá na konec znak nového řádku, který Rankscale API odmítne jako
+neplatný token), oprav to novou verzí:
+
+```bash
+gcloud secrets versions add rankscale-api-key --data-file=<(printf "%s" "rk_tvuj_skutecny_klic")
+```
+
 ## 3b. BigQuery dataset a tabulky
 
-**Bez tohoto kroku job nemá kam zapisovat — spustí se, ale spadne na zápisu do BigQuery.**
+**Bez tohoto kroku job nemá kam zapisovat — spustí se, ale spadne na zápisu do BigQuery**
+(chyba typu `404 Not found: Dataset` nebo `Table not found`).
 
 Skript (`bq_append`) očekává, že dataset a tabulky `raw_*` už existují — sám je nezakládá.
 Produkční pipeline (GitHub Actions) píše do `libor-matejkacz.RankScaleDashboard`
-(viz `../sql/extract1/schema_raw.sql`); tenhle GCP projekt (`rankscale`) je od ní oddělený,
-takže potřebuje **vlastní** dataset a tabulky:
+(viz `../sql/extract1/schema_raw.sql`); tenhle GCP projekt je od ní oddělený, takže
+potřebuje **vlastní** dataset a tabulky ve stejném `$GCP_PROJECT`, kam píše i `env.yaml`:
 
 ```bash
 bq --project_id=$GCP_PROJECT mk --dataset --location=EU ${GCP_PROJECT}:RankScaleDashboard
@@ -138,9 +180,13 @@ bq --project_id=$GCP_PROJECT mk --dataset --location=EU ${GCP_PROJECT}:RankScale
 bq query --project_id=$GCP_PROJECT --use_legacy_sql=false < schema_raw.sql
 ```
 
-`schema_raw.sql` v této složce je kopie `../sql/extract1/schema_raw.sql` s tabulkami
-odkazujícími na projekt `rankscale` místo `libor-matejkacz`. Pokud `env.yaml` později
-přepneš na jiný `GCP_PROJECT`, uprav název projektu i v tomto SQL souboru a spusť ho znovu.
+`schema_raw.sql` v této složce nemá project ID natvrdo zapsané (na rozdíl od
+`../sql/extract1/schema_raw.sql`) — `bq query --project_id=$GCP_PROJECT` určí, do
+kterého projektu se tabulky založí. Při přesunu na jiný projekt tedy stačí mít
+správně nastavené `$GCP_PROJECT` (krok 1) a soubor spustit beze změny.
+
+Pokud dataset už existuje (např. z předchozího pokusu), `bq mk` ohlásí
+`Dataset already exists` — to je neškodné, pokračuj rovnou na `bq query`.
 
 ## 4. Build image a push do Artifact Registry
 
@@ -252,6 +298,17 @@ gcloud run jobs update rankscale-extract \
 - Neúspěšný brand (chyba API/BQ) se loguje, ale extract pokračuje na dalších brandech;
   pokud selhal **alespoň jeden**, celý job skončí s `exit(1)` → execution je označená **Failed**
   a lze na to navázat alert v Cloud Monitoringu (`Cloud Run Job Execution Failed`).
+
+## Troubleshooting — reálné chyby, na které lze narazit
+
+| Chyba v logu | Příčina | Oprava |
+|---|---|---|
+| `requests.exceptions.HTTPError: 401 ... rankscale.ai/v1/metrics/brands` | V Secret Manageru je pořád placeholder `rk_tvuj_klic` (nebo klíč s nadbytečným `\n` z `echo`) | `gcloud secrets versions access latest --secret=rankscale-api-key` — over hodnotu; oprav přes `gcloud secrets versions add ...` (krok 3) |
+| `google.api_core.exceptions.Forbidden: 403 ... User does not have bigquery.jobs.create permission in project X` | Service account byl založený/oprávněný v **jiném** projektu, než do kterého `env.yaml` píše (typicky když `gcloud config get-value project` v tu chvíli ukazoval na jiný projekt, než jaký máš v `$GCP_PROJECT`) | `gcloud iam service-accounts describe "${SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com"` ověří, kde SA vznikl; `gcloud projects get-iam-policy $GCP_PROJECT --flatten="bindings[].members" --filter="bindings.role:roles/bigquery.jobUser"` ověří, komu je role přiřazená. Chybějící binding lze přidat i mezi projekty (SA z projektu A lze oprávnit v projektu B) — viz krok 2 |
+| `404 Not found: Dataset ...` nebo `Table ... not found` | Dataset/tabulky v cílovém projektu ještě nevznikly | krok 3b — `bq mk` + `bq query < schema_raw.sql` |
+| `-bash: --env-vars-file=env.yaml: command not found` | Víceřádkový příkaz se zalomením `\` se při kopírování rozdělil na samostatné řádky | Vlož celý příkaz najednou jako blok, nebo použij jednořádkovou verzi bez `\` |
+| `bq: command not found` / `xxd: command not found` | Cloud Shell nemá `xxd` (a některé nástroje) předinstalované | Použij `od -c` místo `xxd` |
+| Prázdný výstup `echo $GCP_PROJECT ...` | `export` proměnné z kroku 1 platí jen v aktuální session/kartě Cloud Shellu | Spusť `export` řádky z kroku 1 znovu v aktuálním terminálu |
 
 ## Lokální test image
 

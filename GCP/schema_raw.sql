@@ -1,10 +1,12 @@
 -- ============================================================
 -- Rankscale → BigQuery  |  Raw tabulky (L0 landing zone)
--- Projekt:  rankscale
 -- Dataset:  RankScaleDashboard
 -- ============================================================
--- Varianta ../sql/extract1/schema_raw.sql pro samostatný GCP projekt
--- "rankscale", do kterého zapisuje Cloud Run Job (rankscale_extract_gcp.py).
+-- Varianta ../sql/extract1/schema_raw.sql bez natvrdo zapsaného
+-- project ID — použije se ten, který zadáš přes `bq query --project_id=...`
+-- (viz krok 3b v README.md). Díky tomu jde tenhle soubor beze změny
+-- spustit na libovolném GCP projektu, kam Cloud Run Job zapisuje.
+--
 -- Odděleno od produkční pipeline (GitHub Actions), která píše do
 -- libor-matejkacz.RankScaleDashboard — viz ../sql/extract1/schema_raw.sql.
 --
@@ -19,7 +21,7 @@
 -- Zdroj: GET /v1/metrics/brands
 -- Jeden řádek per brand per ETL run.
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `rankscale.RankScaleDashboard.raw_brands`
+CREATE TABLE IF NOT EXISTS `RankScaleDashboard.raw_brands`
 (
   brand_id      STRING,
   name          STRING,
@@ -34,7 +36,7 @@ CREATE TABLE IF NOT EXISTS `rankscale.RankScaleDashboard.raw_brands`
 -- Zdroj: GET /v1/metrics/search-terms
 -- Jeden řádek per search term (prompt × engine) per brand per ETL run.
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `rankscale.RankScaleDashboard.raw_search_terms`
+CREATE TABLE IF NOT EXISTS `RankScaleDashboard.raw_search_terms`
 (
   brand_id            STRING,
   search_term_id      STRING,
@@ -59,7 +61,7 @@ CREATE TABLE IF NOT EXISTS `rankscale.RankScaleDashboard.raw_search_terms`
 -- Zdroj: POST /v1/metrics/search-terms-report
 -- Jeden řádek per brand (vlastní i competitor) per search term per ETL run.
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `rankscale.RankScaleDashboard.raw_brand_snapshots`
+CREATE TABLE IF NOT EXISTS `RankScaleDashboard.raw_brand_snapshots`
 (
   brand_id          STRING,
   search_term_id    STRING,
@@ -86,7 +88,7 @@ CREATE TABLE IF NOT EXISTS `rankscale.RankScaleDashboard.raw_brand_snapshots`
 -- Zdroj: POST /v1/metrics/search-terms-report (includeAnswerTexts: true)
 -- Jeden řádek per AI exekuce per brand per ETL run.
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `rankscale.RankScaleDashboard.raw_answer_texts`
+CREATE TABLE IF NOT EXISTS `RankScaleDashboard.raw_answer_texts`
 (
   brand_id       STRING,
   search_term_id STRING,
@@ -102,7 +104,7 @@ CREATE TABLE IF NOT EXISTS `rankscale.RankScaleDashboard.raw_answer_texts`
 -- Zdroj: POST /v1/metrics/citations → domainSummary.topDomainsByQuery
 -- Jeden řádek per URL × engine × query per brand per ETL run.
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `rankscale.RankScaleDashboard.raw_citations`
+CREATE TABLE IF NOT EXISTS `RankScaleDashboard.raw_citations`
 (
   brand_id       STRING,
   search_term_id STRING,
