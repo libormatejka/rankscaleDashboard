@@ -80,10 +80,13 @@ def bq_max_snapshot(client: bigquery.Client, brand_id: str) -> datetime | None:
     query = f"""
         SELECT MAX(last_snapshot_at) AS max_snap
         FROM `{GCP_PROJECT}.{BQ_DATASET}.raw_brand_snapshots`
-        WHERE brand_id = '{brand_id}'
+        WHERE brand_id = @brand_id
     """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("brand_id", "STRING", brand_id)]
+    )
     try:
-        rows = list(client.query(query).result())
+        rows = list(client.query(query, job_config=job_config).result())
         return rows[0].max_snap if rows and rows[0].max_snap else None
     except Exception:
         return None
