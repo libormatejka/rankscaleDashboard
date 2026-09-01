@@ -56,6 +56,37 @@ Kontext: dvě nezávislé pipeline běží paralelně — GitHub Actions
       **Fix:** rotovat Rankscale API klíč (starý zneplatnit, nový uložit do
       Secret Manageru), spustit `history -c` v Cloud Shellu.
 
+      **Jak příště ladit secrets bez toho, aby se vypsaly na obrazovku:**
+      - Funguje/nefunguje → test proti API, ne výpis hodnoty:
+        ```bash
+        curl -s -o /dev/null -w "%{http_code}\n" \
+          -H "Authorization: Bearer $(gcloud secrets versions access latest --secret=rankscale-api-key --project=$GCP_PROJECT)" \
+          "https://rankscale.ai/v1/metrics/brands?limit=1"
+        ```
+        Hodnota jde přímo do `curl`, na terminál se propíše jen HTTP status.
+      - Délka/formát (např. nadbytečný `\n` z `echo` místo `printf`) → jen počet bajtů:
+        ```bash
+        gcloud secrets versions access latest --secret=rankscale-api-key --project=$GCP_PROJECT | wc -c
+        ```
+      - Je to pořád placeholder? → porovnání hashů, ne hodnot:
+        ```bash
+        gcloud secrets versions access latest --secret=rankscale-api-key --project=$GCP_PROJECT | sha256sum
+        # porovnej s: printf "rk_tvuj_klic" | sha256sum
+        ```
+      - Nutná vizuální kontrola → jen prefix, nikdy celá hodnota:
+        ```bash
+        gcloud secrets versions access latest --secret=rankscale-api-key --project=$GCP_PROJECT | cut -c1-5
+        ```
+      - Kolem případného výjimečného výpisu vypnout shell historii:
+        ```bash
+        set +o history
+        # citlivý příkaz
+        set -o history
+        ```
+      Klíč, který už jednou na obrazovku vypsaný byl, se považuje za
+      kontaminovaný bez ohledu na následnou opatrnost — rotuje se, ne "možná
+      to nikdo neviděl".
+
 - [ ] **`roles/owner` na jednom osobním účtu bez separace rolí**
       `jsem@libor-matejka.cz` má Owner na obou projektech a dělá vývoj, deploy
       i IAM správu — single point of failure, no separation of duties.
